@@ -25,14 +25,17 @@ layer over the macOS accessibility APIs without writing a menu-bar app.
    (System Settings → Privacy & Security → Accessibility). This is required to
    read the selected text and to type transcripts into other apps.
 
-4. Grant **Microphone** access on the first dictation.
+4. Grant **Microphone** access on the first dictation, and **Screen Recording**
+   on the first snip (System Settings → Privacy & Security → Screen Recording).
+   Without the latter, screen capture fails with "could not create image from
+   display" — an unhelpful message for a permissions problem.
 
 5. Reload the config from the Hammerspoon menu (🔨 → Reload Config). You should
    see a "ready" alert and a 🔈 menu-bar icon.
 
 ## Default keys
 
-Both are **recorded, not typed into a config file** — press 🔈 → *Record
+All three are **recorded, not typed into a config file** — press 🔈 → *Record
 hotkey…* and press the combination you want. Recording captures whatever
 actually arrives at the OS, which is the only reliable approach if a software
 KVM sits between your keyboard and this machine (some mangle modifiers in
@@ -42,6 +45,7 @@ transit).
 |---|---|---|
 | Read aloud | `⌃⌘` (tap both, release) | New selection → read it. Nothing new → pause/resume. |
 | Dictate | `⇧⌘` (hold) | Push-to-talk. Release to transcribe. |
+| Snip & read | `F7` | Drag a box; the text in it is OCR'd and read aloud. |
 
 ## The mini player
 

@@ -1,8 +1,8 @@
 # kokoro-voice
 
-Local read-aloud and dictation for your desktop. Select text anywhere and hear
-it; hold a key and speak to type. Both directions run entirely on your own
-machine.
+Local read-aloud, dictation, and screen-snip OCR for your desktop. Select text
+anywhere and hear it; hold a key and speak to type; drag a box around anything
+on screen and have it read to you. All of it runs on your own machine.
 
 **No cloud, no API keys, no account.** Once the models are downloaded the
 service makes no outbound network calls at all — enforced, not just intended.
@@ -11,6 +11,7 @@ service makes no outbound network calls at all — enforced, not just intended.
 |---|---|---|
 | Text → speech | [Kokoro](https://github.com/thewh1teagle/kokoro-onnx) (ONNX, 54 voices) | ~6x realtime |
 | Speech → text | [Whisper large-v3-turbo](https://github.com/ml-explore/mlx-examples) (MLX) | ~8x realtime |
+| Screen → text | Apple Vision OCR (ships with macOS) | 0.17–0.34s |
 
 ---
 
@@ -36,6 +37,7 @@ tiny, and both platforms share one HTTP contract.
 - **`client/speak.py`** — read-aloud client. **Standard library only**, so it
   runs on a stock Python with nothing installed.
 - **`client/dictate.py`** — dictation client. Needs `sounddevice`/`soundfile`.
+- **`client/snip.py`** — screen-snip OCR. Uses the OS OCR engine, not a model.
 - **`hosts/<platform>/`** — desktop integration: hotkeys, mini player, tray.
 
 ## Requirements
@@ -76,6 +78,16 @@ curl localhost:8123/health
 whatever has focus, and also placed on the clipboard as a fallback (restored
 after 45 seconds so transcripts don't linger).
 
+**Snip and read** — press the snip key, drag a box around anything on screen,
+and it is OCR'd and read aloud. This is for text you *cannot* select: images,
+PDFs in a viewer, video frames, remote desktops, screenshots someone sent you.
+OCR uses Apple's Vision framework, which ships with the OS — nothing is
+downloaded and nothing leaves the machine. The capture is deleted as soon as the
+text is extracted.
+
+Requires the **Screen Recording** permission for whichever app triggers it.
+Without it `screencapture` fails with "could not create image from display".
+
 From the command line:
 
 ```sh
@@ -86,6 +98,10 @@ python3 client/speak.py --voices          # list all 54 voices
 
 python3 client/dictate.py --record        # record until --stop, print transcript
 python3 client/dictate.py --devices       # list input devices
+
+python3 client/snip.py                    # select a region, print the text
+python3 client/snip.py --speak            # select a region, read it aloud
+python3 client/snip.py --file shot.png    # OCR an existing image
 ```
 
 ## Configuration
@@ -188,8 +204,8 @@ playing must reach the producer too.
 
 | | Status |
 |---|---|
-| **macOS** (Apple silicon) | Complete — service, hotkeys, mini player, dictation |
-| **Windows** | Service and clients port directly; host integration in progress. See [PORTING-WINDOWS.md](PORTING-WINDOWS.md) |
+| **macOS** (Apple silicon) | Complete — service, hotkeys, mini player, dictation, snip OCR |
+| **Windows** | Service and clients port directly; host integration in progress. OCR maps to the built-in `Windows.Media.Ocr`, also on-device. See [PORTING-WINDOWS.md](PORTING-WINDOWS.md) |
 | **Linux** | Clients work; no host integration |
 
 The service and both clients are portable. What is platform-specific is the

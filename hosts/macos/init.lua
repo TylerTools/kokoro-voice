@@ -40,6 +40,8 @@ local PYTHON = "/usr/bin/python3"
 -- unlike speak.py which is deliberately stdlib-only.
 local VENV_PYTHON = os.getenv("HOME") .. "/tts/kokoro-service/.venv/bin/python"
 local DICTATE = os.getenv("HOME") .. "/tts/kokoro-service/client/dictate.py"
+-- snip.py needs pyobjc (Vision framework), so it also runs in the service venv.
+local SNIP = os.getenv("HOME") .. "/tts/kokoro-service/client/snip.py"
 local LOG = os.getenv("HOME") .. "/.hammerspoon/hotkey-debug.log"
 
 local function log(msg)
@@ -686,6 +688,46 @@ function Dictation:stop()
     hs.task.new(VENV_PYTHON, nil, { DICTATE, "--stop" }):start()
 end
 
+-- ═══ screen snip (OCR) ════════════════════════════════════════════════════
+--- Drag a box around anything on screen, OCR it, read it aloud.
+---
+--- For text that cannot be selected: images, PDFs in a viewer, video frames,
+--- remote desktops. OCR is Apple's Vision framework -- on-device, no model
+--- download, no network -- so the fully-local guarantee still holds.
+---
+--- Needs the SCREEN RECORDING permission for Hammerspoon. Without it
+--- `screencapture` fails with "could not create image from display", which is
+--- reported here rather than failing silently.
+Snip = { task = nil }
+
+function Snip:start()
+    if self.task then self.task:terminate(); self.task = nil end
+    log("SNIP start")
+
+    -- No spinner yet: the crosshair is the feedback, and a floating panel
+    -- would sit on top of the very thing being selected.
+    local buf = ""
+    self.task = hs.task.new(VENV_PYTHON, function(code)
+        Snip.task = nil
+        if code ~= 0 and code ~= 1 then Player:hide() end
+    end, function(_, stdout)
+        buf = buf .. (stdout or "")
+        while true do
+            local line, rest = buf:match("^([^\n]*)\n(.*)$")
+            if not line then break end
+            buf = rest
+            if line == "CANCELLED" then
+                log("  snip cancelled")
+            elseif line:match("^ERROR ") then
+                notify(line:gsub("^ERROR ", ""))
+                log("  " .. line)
+            end
+        end
+        return true
+    end, { SNIP, "--speak" })
+    self.task:start()
+end
+
 -- ═══ binding engine ═══════════════════════════════════════════════════════
 local hotkeyHandle, chordWatcher, chordKeyWatcher
 local armed, armedAt = false, 0
@@ -733,6 +775,22 @@ function ApplyBinding(b)
 end
 
 function CurrentBinding() return hs.settings.get("kokoroHotkey") end
+function CurrentSnipBinding() return hs.settings.get("kokoroSnipHotkey") end
+
+local snipHandle
+
+--- Key-only, deliberately. A modifier chord would need to survive the whole
+--- drag, and screencapture takes over the keyboard the moment it starts.
+function ApplySnipBinding(b)
+    if snipHandle then snipHandle:delete(); snipHandle = nil end
+    if not b then return end
+    if b.kind ~= "key" then
+        log("snip binding must be a plain key, got a chord -- ignored")
+        return
+    end
+    snipHandle = hs.hotkey.bind(b.mods or {}, b.key, function() Snip:start() end)
+    log("bound snip key: " .. describe(b))
+end
 function CurrentDictateBinding() return hs.settings.get("kokoroDictateHotkey") end
 
 local dictHandle, dictChord, dictChordKey
@@ -818,7 +876,9 @@ end
 function Recorder:save(b)
     local slot = self.target or "kokoroHotkey"
     hs.settings.set(slot, b)
-    if slot == "kokoroDictateHotkey" then ApplyDictateBinding(b) else ApplyBinding(b) end
+    if slot == "kokoroDictateHotkey" then ApplyDictateBinding(b)
+    elseif slot == "kokoroSnipHotkey" then ApplySnipBinding(b)
+    else ApplyBinding(b) end
     self:setLine(describe(b), "saved")
     Settings:refresh()
     hs.timer.doAfter(1.1, function() Recorder:close() end)
@@ -1028,6 +1088,10 @@ if menu then
             { title = "Hotkey: " .. describe(CurrentBinding()), disabled = true },
             { title = "Record read hotkey…", fn = function() Recorder:start("kokoroHotkey") end },
             { title = "Dictate hotkey: " .. describe(CurrentDictateBinding()), disabled = true },
+            { title = "Snip & read (OCR)", fn = function() Snip:start() end },
+            { title = "Snip hotkey: " .. describe(CurrentSnipBinding()), disabled = true },
+            { title = "Record snip hotkey…",
+              fn = function() Recorder:start("kokoroSnipHotkey") end },
             { title = "Record dictate hotkey…",
               fn = function() Recorder:start("kokoroDictateHotkey") end },
             { title = string.format("Speed: %gx", Speed()), disabled = true },
@@ -1046,7 +1110,11 @@ if not CurrentDictateBinding() then
     hs.settings.set("kokoroDictateHotkey", { kind = "key", mods = {}, key = "f6" })
 end
 ApplyBinding(CurrentBinding())
+if not CurrentSnipBinding() then
+    hs.settings.set("kokoroSnipHotkey", { kind = "key", mods = {}, key = "f7" })
+end
 ApplyDictateBinding(CurrentDictateBinding())
+ApplySnipBinding(CurrentSnipBinding())
 
 hs.autoLaunch(true)
 hs.menuIcon(true)

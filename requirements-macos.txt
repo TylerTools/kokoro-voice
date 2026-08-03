@@ -2,3 +2,9 @@
 # Measured 0.86s for 6.85s of audio (7.9x realtime) vs 2.48s for
 # faster-whisper float32 on CPU — large-model accuracy at small-model latency.
 mlx-whisper
+
+# Screen-snip OCR via the Vision framework. Ships with macOS, so this is only
+# the Python binding — no model download, no network, ~2MB on disk.
+# Measured: 0.34s accurate / 0.17s fast on a 1000x340 text image.
+pyobjc-framework-Vision
+pyobjc-framework-Quartz
