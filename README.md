@@ -42,7 +42,7 @@ tiny, and both platforms share one HTTP contract.
 
 - Python 3.12+ (the installer fetches it via [uv](https://docs.astral.sh/uv/) if missing)
 - macOS on Apple silicon, or Windows — see [Platform support](#platform-support)
-- ~1.3 GB disk for models, ~750 MB for the environment
+- ~1.3 GB disk: ~500 MB models, ~750 MB environment
 
 ## Install
 

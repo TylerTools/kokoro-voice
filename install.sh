@@ -41,6 +41,14 @@ export VIRTUAL_ENV="${HERE}/.venv"
 uv pip install --quiet -r "${HERE}/requirements.txt"
 if $IS_MAC && [[ "$(uname -m)" == "arm64" ]]; then
     uv pip install --quiet -r "${HERE}/requirements-macos.txt"
+    # mlx-whisper declares torch, but only imports it in torch_whisper.py — the
+    # weight-CONVERSION path, which we never take. Verified by checking that
+    # `torch` never enters sys.modules across `import mlx_whisper` or a real
+    # transcribe() call. Dropping it saves ~480MB per install.
+    if [[ -d "${HERE}/.venv/lib/python3.12/site-packages/torch" ]]; then
+        uv pip uninstall --quiet torch 2>/dev/null || true
+        ok "Removed unused torch (~480MB; conversion-only dependency)"
+    fi
     ok "Installed with MLX (Apple GPU) speech-to-text"
 else
     warn "Not Apple silicon — installing the CPU speech-to-text engine."
