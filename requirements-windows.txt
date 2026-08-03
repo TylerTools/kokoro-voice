@@ -1,0 +1,5 @@
+# MLX is Apple-only. CTranslate2 is the portable equivalent.
+# With an NVIDIA GPU use device="cuda", compute_type="float16".
+# Without one, BENCHMARK int8 against float32 — on ARM float32 won, but x86
+# with AVX-512/VNNI may invert that. Measure; don't assume.
+faster-whisper

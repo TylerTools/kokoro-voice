@@ -1,0 +1,10 @@
+# Core service + clients. Platform-specific STT engines live in the
+# requirements-<platform>.txt files alongside this one.
+fastapi
+uvicorn[standard]
+kokoro-onnx
+soundfile
+numpy
+
+# Dictation client (records from the microphone)
+sounddevice

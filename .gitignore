@@ -1,0 +1,15 @@
+# Model weights — downloaded, not shipped (524MB)
+models/*.onnx
+models/*.bin
+
+# Per-machine Python environment — rebuild with uv, never transfer
+.venv/
+
+# Runtime
+logs/
+*.wav
+__pycache__/
+*.pyc
+
+# Never commit the shared secret
+token
