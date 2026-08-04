@@ -83,12 +83,22 @@
       <p class="perm">Needs <strong>Screen Recording</strong> permission.</p>
     </section>
 
-    <h2>Try the voice</h2>
+    <h2>Voice &amp; speed</h2>
     <section class="card">
+      <label class="field">
+        <span>Voice</span>
+        <select id="voice"></select>
+      </label>
+
+      <label class="field">
+        <span>Speed</span>
+        <div class="chips" id="speeds"></div>
+      </label>
+
       <div class="row">
         <input id="preview-text" type="text" spellcheck="false"
                value="Everything here runs on your own computer." />
-        <button data-cmd="speak_text" data-arg="preview-text">Speak it</button>
+        <button data-cmd="speak_text" data-arg="preview-text">Preview</button>
       </div>
     </section>
 

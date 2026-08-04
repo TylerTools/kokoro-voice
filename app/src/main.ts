@@ -129,5 +129,45 @@ invoke<Record<string, string>>("hotkeys").then((hk) => {
   set("key-snip", hk.snip);
 });
 
+// ── voice & speed ───────────────────────────────────────────────────────────
+const SPEEDS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+async function initPrefs() {
+  const prefs = await invoke<{ voice: string; speed: number }>("get_prefs");
+
+  // Voices come from the engine, so this only populates once it is up. Retry
+  // rather than leaving an empty dropdown if setup is still running.
+  const voices = await invoke<string[]>("list_voices");
+  const sel = document.getElementById("voice") as HTMLSelectElement;
+  if (!voices.length) {
+    setTimeout(initPrefs, 5000);
+    return;
+  }
+  sel.innerHTML = "";
+  for (const v of voices) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = v;
+    o.selected = v === prefs.voice;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", () => invoke("set_prefs", { voice: sel.value }));
+
+  const chips = document.getElementById("speeds") as HTMLElement;
+  chips.innerHTML = "";
+  for (const sp of SPEEDS) {
+    const b = document.createElement("button");
+    b.className = "chip" + (Math.abs(sp - prefs.speed) < 0.01 ? " on" : "");
+    b.textContent = `${sp}x`;
+    b.addEventListener("click", async () => {
+      await invoke("set_prefs", { speed: sp });
+      chips.querySelectorAll(".chip").forEach((c) => c.classList.remove("on"));
+      b.classList.add("on");
+    });
+    chips.appendChild(b);
+  }
+}
+
+initPrefs();
 refresh();
 setInterval(refresh, 4000);

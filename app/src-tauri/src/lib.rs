@@ -1,3 +1,4 @@
+mod chords;
 // Kokoro Voice — desktop app.
 //
 // The shell: first-run setup, tray, global hotkeys, settings UI, and ownership
@@ -347,6 +348,70 @@ async fn setup_engine(app: AppHandle) -> Result<String, String> {
     Ok("installed".into())
 }
 
+// ── preferences ──────────────────────────────────────────────────────────────
+
+fn prefs_file() -> std::path::PathBuf {
+    config_dir().join("prefs.json")
+}
+
+fn load_prefs() -> serde_json::Value {
+    std::fs::read_to_string(prefs_file())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({ "voice": "af_heart", "speed": 1.0 }))
+}
+
+#[tauri::command]
+fn get_prefs() -> serde_json::Value {
+    load_prefs()
+}
+
+#[tauri::command]
+fn set_prefs(voice: Option<String>, speed: Option<f64>) -> serde_json::Value {
+    let mut p = load_prefs();
+    if let Some(v) = voice {
+        p["voice"] = serde_json::Value::String(v);
+    }
+    if let Some(sp) = speed {
+        // Clamp to what the engine accepts (gt 0.1, le 3.0) so a bad value
+        // fails here rather than as an opaque 422 mid-read.
+        p["speed"] = serde_json::json!(sp.clamp(0.25, 3.0));
+    }
+    let _ = std::fs::write(prefs_file(), serde_json::to_string_pretty(&p).unwrap_or_default());
+    p
+}
+
+#[tauri::command]
+fn list_voices() -> Vec<String> {
+    let url = format!("http://127.0.0.1:{}/voices", port());
+    Command::new("curl")
+        .args(["-fsS", "-m", "5", &url])
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .and_then(|v| {
+            v.get("voices")?
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        })
+        .unwrap_or_default()
+}
+
+/// Voice and speed as CLI arguments for the speak client.
+fn voice_args() -> Vec<String> {
+    let p = load_prefs();
+    let mut out = Vec::new();
+    if let Some(v) = p.get("voice").and_then(|v| v.as_str()) {
+        out.push("--voice".into());
+        out.push(v.to_string());
+    }
+    if let Some(sp) = p.get("speed").and_then(|v| v.as_f64()) {
+        out.push("--speed".into());
+        out.push(format!("{sp}"));
+    }
+    out
+}
+
 // ── commands ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -428,7 +493,9 @@ fn run_client_monitored(app: &AppHandle, script: &str, args: Vec<String>) {
 
 #[tauri::command]
 fn read_selection(app: AppHandle) {
-    run_client_monitored(&app, "speak.py", vec!["--selection".into()]);
+    let mut args = vec!["--selection".to_string()];
+    args.extend(voice_args());
+    run_client_monitored(&app, "speak.py", args);
 }
 
 /// Pause or resume, returning the engine's own view of the state.
@@ -464,7 +531,9 @@ fn snip_and_read(app: AppHandle) {
 
 #[tauri::command]
 fn speak_text(app: AppHandle, text: String) {
-    run_client_monitored(&app, "speak.py", vec!["--text".into(), text]);
+    let mut args = vec!["--text".to_string(), text];
+    args.extend(voice_args());
+    run_client_monitored(&app, "speak.py", args);
 }
 
 /// Type the transcript into whatever has focus.
@@ -474,6 +543,9 @@ fn speak_text(app: AppHandle, text: String) {
 /// AppleScript string literal, so quotes and backslashes MUST be escaped: an
 /// unescaped quote would not merely break the script, it would change it.
 fn type_text(text: &str) {
+    // Our own synthesized keystrokes go through the same event tap, so deafen
+    // it while typing or a transcript could retrigger the gesture that made it.
+    chords::suppress(true);
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(r#"tell application "System Events" to keystroke "{escaped}""#);
     let _ = Command::new("osascript")
@@ -481,6 +553,7 @@ fn type_text(text: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+    chords::suppress(false);
 }
 
 /// Start recording. The transcript is typed when the recorder exits.
@@ -516,41 +589,47 @@ fn dictation_stop(app: &AppHandle) {
 
 // ── hotkeys ──────────────────────────────────────────────────────────────────
 
-const HK_READ: &str = "Control+Alt+Command+R";
-const HK_SNIP: &str = "Control+Alt+Command+S";
-const HK_DICTATE: &str = "Control+Alt+Command+D";
+// Snip is a plain accelerator — a real key survives the KVM fine.
+const HK_SNIP: &str = "Control+Alt+D";
+// Read and dictate are MODIFIER-ONLY CHORDS, which the global-shortcut plugin
+// cannot express. See chords.rs: they are watched with a passive event tap,
+// matching the bindings this setup already had muscle memory for.
+const CHORD_READ: [&str; 2] = ["ctrl", "cmd"];
+const CHORD_DICTATE: [&str; 2] = ["shift", "cmd"];
 
 #[tauri::command]
 fn hotkeys() -> serde_json::Value {
-    serde_json::json!({ "read": HK_READ, "snip": HK_SNIP, "dictate": HK_DICTATE })
+    serde_json::json!({
+        "read": "⌃⌘ (tap)",
+        "snip": "⌃⌥D",
+        "dictate": "⇧⌘ (hold)"
+    })
 }
 
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
-    let read: Shortcut = HK_READ.parse().map_err(|_| "bad read shortcut")?;
-    let snip: Shortcut = HK_SNIP.parse().map_err(|_| "bad snip shortcut")?;
-    let dictate: Shortcut = HK_DICTATE.parse().map_err(|_| "bad dictate shortcut")?;
+    // Modifier chords first — these are the ones with muscle memory behind them.
+    let a1 = app.clone();
+    let a2 = app.clone();
+    let a3 = app.clone();
+    chords::watch(
+        chords::ChordConfig {
+            tap: CHORD_READ.to_vec(),
+            hold: CHORD_DICTATE.to_vec(),
+        },
+        move || read_selection(a1.clone()),
+        move || dictation_start(&a2),
+        move || dictation_stop(&a3),
+    )?;
 
+    let snip: Shortcut = HK_SNIP.parse().map_err(|_| "bad snip shortcut")?;
     app.global_shortcut()
-        .on_shortcuts([read, snip, dictate], move |app, sc, event| {
+        .on_shortcuts([snip], move |app, sc, event| {
             // Read and snip fire once on press. Dictation is PUSH TO TALK:
             // record while held, transcribe on release. Toggle semantics were
             // rejected because a start with no matching stop leaves the
             // microphone recording invisibly.
-            match event.state {
-                ShortcutState::Pressed => {
-                    if sc == &read {
-                        read_selection(app.clone());
-                    } else if sc == &snip {
-                        snip_and_read(app.clone());
-                    } else if sc == &dictate {
-                        dictation_start(app);
-                    }
-                }
-                ShortcutState::Released => {
-                    if sc == &dictate {
-                        dictation_stop(app);
-                    }
-                }
+            if event.state == ShortcutState::Pressed && sc == &snip {
+                snip_and_read(app.clone());
             }
         })
         .map_err(|e| format!("could not register hotkeys: {e}"))
@@ -604,6 +683,9 @@ pub fn run() {
             snip_and_read,
             speak_text,
             toggle_playback,
+            get_prefs,
+            set_prefs,
+            list_voices,
             hotkeys
         ])
         .setup(|app| {
@@ -623,12 +705,13 @@ pub fn run() {
                 eprintln!("{e}");
             }
 
-            let read = MenuItem::with_id(app, "read", "Read selection", true, Some(HK_READ))?;
+            let read = MenuItem::with_id(app, "read", "Read selection  (⌃⌘ tap)", true, None::<&str>)?;
             let snip = MenuItem::with_id(app, "snip", "Snip & read", true, Some(HK_SNIP))?;
+            let dict = MenuItem::with_id(app, "dict", "Dictate  (⇧⌘ hold)", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "Settings…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Kokoro Voice", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&read, &snip, &stop, &open, &quit])?;
+            let menu = Menu::with_items(app, &[&read, &dict, &snip, &stop, &open, &quit])?;
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
