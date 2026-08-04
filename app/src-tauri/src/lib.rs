@@ -597,25 +597,79 @@ const HK_SNIP: &str = "Control+Alt+D";
 const CHORD_READ: [&str; 2] = ["ctrl", "cmd"];
 const CHORD_DICTATE: [&str; 2] = ["shift", "cmd"];
 
+/// Chord bindings, from prefs, defaulting to the bindings the previous host used.
+fn chord_config_from_prefs() -> chords::ChordConfig {
+    let p = load_prefs();
+    let get = |k: &str, fallback: &[&str]| -> Vec<String> {
+        p.get(k)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>())
+            .filter(|v: &Vec<String>| !v.is_empty())
+            .unwrap_or_else(|| fallback.iter().map(|s| s.to_string()).collect())
+    };
+    chords::ChordConfig {
+        tap: get("chord_read", &CHORD_READ),
+        hold: get("chord_dictate", &CHORD_DICTATE),
+    }
+}
+
+fn pretty_chord(mods: &[String]) -> String {
+    let glyph = |m: &str| match m {
+        "ctrl" => "⌃",
+        "alt" => "⌥",
+        "shift" => "⇧",
+        "cmd" => "⌘",
+        _ => "?",
+    };
+    // Fixed order so the same chord always renders identically.
+    ["ctrl", "alt", "shift", "cmd"]
+        .iter()
+        .filter(|o| mods.iter().any(|m| m == *o))
+        .map(|o| glyph(o))
+        .collect()
+}
+
+/// Begin capturing. The next chord pressed and released is recorded rather
+/// than acted on — the only reliable way to bind a key when a KVM may be
+/// rewriting modifiers in transit.
+#[tauri::command]
+fn record_chord(slot: String) {
+    chords::start_recording(&slot);
+}
+
+/// Poll for a completed capture; saves it and re-applies the binding live.
+#[tauri::command]
+fn poll_recorded() -> Option<serde_json::Value> {
+    let (slot, mods) = chords::take_recorded()?;
+    let key = match slot.as_str() {
+        "read" => "chord_read",
+        "dictate" => "chord_dictate",
+        _ => return None,
+    };
+    let mut p = load_prefs();
+    p[key] = serde_json::json!(mods);
+    let _ = std::fs::write(prefs_file(), serde_json::to_string_pretty(&p).unwrap_or_default());
+    chords::set_config(chord_config_from_prefs());
+    Some(serde_json::json!({ "slot": slot, "label": pretty_chord(&mods) }))
+}
+
 #[tauri::command]
 fn hotkeys() -> serde_json::Value {
+    let c = chord_config_from_prefs();
     serde_json::json!({
-        "read": "⌃⌘ (tap)",
+        "read": format!("{} (tap)", pretty_chord(&c.tap)),
         "snip": "⌃⌥D",
-        "dictate": "⇧⌘ (hold)"
+        "dictate": format!("{} (hold)", pretty_chord(&c.hold))
     })
 }
 
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     // Modifier chords first — these are the ones with muscle memory behind them.
+    chords::set_config(chord_config_from_prefs());
     let a1 = app.clone();
     let a2 = app.clone();
     let a3 = app.clone();
     chords::watch(
-        chords::ChordConfig {
-            tap: CHORD_READ.to_vec(),
-            hold: CHORD_DICTATE.to_vec(),
-        },
         move || read_selection(a1.clone()),
         move || dictation_start(&a2),
         move || dictation_stop(&a3),
@@ -686,6 +740,8 @@ pub fn run() {
             get_prefs,
             set_prefs,
             list_voices,
+            record_chord,
+            poll_recorded,
             hotkeys
         ])
         .setup(|app| {

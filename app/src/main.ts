@@ -168,6 +168,42 @@ async function initPrefs() {
   }
 }
 
+// ── hotkey recorder ─────────────────────────────────────────────────────────
+// Captures whatever ARRIVES after the KVM has translated it, which is the only
+// reliable way to bind a key on a setup where modifiers may be rewritten in
+// transit. Typing a combination into a box would record what you MEANT, not
+// what the machine actually sees.
+let recTimer: number | undefined;
+
+document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const slot = btn.dataset.rec!;
+    const original = btn.textContent;
+    btn.textContent = "Press keys…";
+    btn.classList.add("recording");
+    await invoke("record_chord", { slot });
+
+    clearInterval(recTimer);
+    let waited = 0;
+    recTimer = window.setInterval(async () => {
+      waited += 250;
+      const got = await invoke<{ slot: string; label: string } | null>("poll_recorded");
+      if (got) {
+        clearInterval(recTimer);
+        btn.textContent = original;
+        btn.classList.remove("recording");
+        const kbd = document.getElementById(`key-${got.slot}`);
+        if (kbd) kbd.textContent = got.label;
+      } else if (waited > 15000) {
+        // Give up rather than leaving the button stuck in "Press keys…".
+        clearInterval(recTimer);
+        btn.textContent = original;
+        btn.classList.remove("recording");
+      }
+    }, 250);
+  });
+});
+
 initPrefs();
 refresh();
 setInterval(refresh, 4000);

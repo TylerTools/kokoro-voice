@@ -44,16 +44,25 @@ fn active_mods(event: &CGEvent) -> Vec<&'static str> {
     out
 }
 
+#[derive(Clone)]
 pub struct ChordConfig {
     /// Tap-and-release chord, e.g. ["ctrl","cmd"] — fires on release.
-    pub tap: Vec<&'static str>,
+    pub tap: Vec<String>,
     /// Push-to-talk chord, e.g. ["shift","cmd"] — press and release callbacks.
-    pub hold: Vec<&'static str>,
+    pub hold: Vec<String>,
 }
 
 struct State {
     tap_armed: bool,
     tap_at: std::time::Instant,
+    /// Whether any modifier is currently held. Without this, `blocked` below
+    /// was set by ORDINARY TYPING and never cleared until a modifier happened
+    /// to be pressed and released — so the first chord after typing anything
+    /// silently did nothing.
+    mods_down: bool,
+    /// Highest modifier count seen during the current hold, so a chord can be
+    /// captured on release even though the flags arrive incrementally.
+    peak: Vec<String>,
     /// Set once a real key is pressed while a chord is held: that means the
     /// user was typing an ordinary shortcut (Cmd+Ctrl+Space, say), not making
     /// a gesture. Without this guard every such shortcut fires the hotkey.
@@ -62,6 +71,33 @@ struct State {
 }
 
 static SUPPRESSED: AtomicBool = AtomicBool::new(false);
+
+/// Live config, so a re-bind from the settings panel takes effect immediately
+/// rather than at the next launch.
+pub static CONFIG: Mutex<Option<ChordConfig>> = Mutex::new(None);
+
+/// When set, the next chord is CAPTURED instead of acted on. This is how the
+/// hotkey gets bound: record whatever actually ARRIVES, after the KVM has
+/// translated it, rather than trusting a combination typed into a box.
+pub static RECORDING: Mutex<Option<String>> = Mutex::new(None);
+/// Result of the last capture: (slot, mods).
+pub static RECORDED: Mutex<Option<(String, Vec<String>)>> = Mutex::new(None);
+
+pub fn set_config(cfg: ChordConfig) {
+    if let Ok(mut c) = CONFIG.lock() {
+        *c = Some(cfg);
+    }
+}
+
+pub fn start_recording(slot: &str) {
+    if let Ok(mut r) = RECORDING.lock() {
+        *r = Some(slot.to_string());
+    }
+}
+
+pub fn take_recorded() -> Option<(String, Vec<String>)> {
+    RECORDED.lock().ok().and_then(|mut r| r.take())
+}
 
 /// Temporarily ignore chords — used while we synthesize keystrokes ourselves,
 /// so typing a transcript cannot retrigger the thing that produced it.
@@ -76,7 +112,6 @@ pub fn suppress(on: bool) {
 /// fails to create, which is reported rather than failing silently — a dead
 /// hotkey with no explanation is the worst outcome here.
 pub fn watch<F1, F2, F3>(
-    cfg: ChordConfig,
     on_tap: F1,
     on_hold_start: F2,
     on_hold_end: F3,
@@ -92,6 +127,8 @@ where
         let state = Mutex::new(State {
             tap_armed: false,
             tap_at: std::time::Instant::now(),
+            mods_down: false,
+            peak: Vec::new(),
             blocked: false,
             holding: false,
         });
@@ -110,19 +147,55 @@ where
 
             match etype {
                 CGEventType::KeyDown => {
-                    // A real keypress means this is an ordinary shortcut.
-                    st.blocked = true;
-                    if st.tap_armed {
+                    // A real keypress only means "ordinary shortcut" if
+                    // modifiers are actually down. Blocking on every keystroke
+                    // left the flag stuck true through normal typing.
+                    if st.mods_down {
+                        st.blocked = true;
                         st.tap_armed = false;
                     }
                 }
                 CGEventType::FlagsChanged => {
                     let mods = active_mods(event);
-                    let same = |want: &[&str]| {
-                        mods.len() == want.len() && want.iter().all(|w| mods.contains(w))
+                    st.mods_down = !mods.is_empty();
+                    if mods.len() > st.peak.len() {
+                        st.peak = mods.iter().map(|m| m.to_string()).collect();
+                    }
+
+                    // Recording swallows the gesture rather than acting on it.
+                    if mods.is_empty() {
+                        let slot = RECORDING.lock().ok().and_then(|mut r| r.take());
+                        if let Some(slot) = slot {
+                            if !st.peak.is_empty() {
+                                if let Ok(mut rec) = RECORDED.lock() {
+                                    *rec = Some((slot, st.peak.clone()));
+                                }
+                            }
+                            st.peak.clear();
+                            st.tap_armed = false;
+                            st.blocked = false;
+                            st.holding = false;
+                            return CallbackResult::Keep;
+                        }
+                    }
+
+                    let cfg_guard = CONFIG.lock().ok();
+                    let cfg_ref = cfg_guard.as_ref().and_then(|c| c.as_ref());
+                    let (want_tap, want_hold): (Vec<String>, Vec<String>) = match cfg_ref {
+                        Some(c) => (
+                            c.tap.iter().map(|s| s.to_string()).collect(),
+                            c.hold.iter().map(|s| s.to_string()).collect(),
+                        ),
+                        None => (Vec::new(), Vec::new()),
+                    };
+                    let same = |want: &[String]| {
+                        !want.is_empty()
+                            && mods.len() == want.len()
+                            && want.iter().all(|w| mods.contains(&w.as_str()))
                     };
 
                     if mods.is_empty() {
+                        st.peak.clear();
                         // Everything released.
                         if st.holding {
                             st.holding = false;
@@ -138,11 +211,11 @@ where
                         st.tap_armed = false;
                         st.blocked = false;
                     } else {
-                        if same(&cfg.tap) && !st.blocked {
+                        if same(&want_tap) && !st.blocked {
                             st.tap_armed = true;
                             st.tap_at = std::time::Instant::now();
                         }
-                        if same(&cfg.hold) {
+                        if same(&want_hold) {
                             if !st.holding && !st.blocked {
                                 st.holding = true;
                                 on_hold_start();

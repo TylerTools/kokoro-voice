@@ -195,3 +195,13 @@ select {
   background: transparent; color: var(--ink); border: 1px solid var(--line);
 }
 .chip.on { background: var(--accent); color: #fff; border-color: transparent; }
+
+/* ── hotkey recorder ─────────────────────────────────────────────────────── */
+.feature-head { gap: 8px; }
+.feature-head h3 { flex: 1; }
+.rec {
+  min-width: 0; padding: 5px 11px; font-size: 12px;
+  background: transparent; color: var(--muted); border: 1px solid var(--line);
+}
+.rec:hover { color: var(--ink); }
+.rec.recording { border-color: var(--accent); color: var(--accent); }
