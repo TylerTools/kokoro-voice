@@ -3,6 +3,12 @@
 # faster-whisper float32 on CPU — large-model accuracy at small-model latency.
 mlx-whisper
 
+# REQUIRED PIN. mlx-whisper declares `numba` with no lower bound, and the
+# resolver backtracks to numba 0.53.1 -> llvmlite 0.36.0, which refuses to
+# build on Python 3.12 ("only versions >=3.6,<3.10 are supported"). That makes
+# a from-scratch install fail for every new user. Verified working: 0.66.0.
+numba>=0.60
+
 # Screen-snip OCR via the Vision framework. Ships with macOS, so this is only
 # the Python binding — no model download, no network, ~2MB on disk.
 # Measured: 0.34s accurate / 0.17s fast on a 1000x340 text image.
