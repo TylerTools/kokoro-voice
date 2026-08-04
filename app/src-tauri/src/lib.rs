@@ -376,24 +376,95 @@ fn run_client(app: &AppHandle, script: &str, args: &[&str]) {
         .spawn();
 }
 
+/// Park the transport in the upper-right of the work area and show it.
+fn show_player(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("player") else { return };
+    if let Ok(Some(mon)) = w.primary_monitor() {
+        let scale = mon.scale_factor();
+        let size = mon.size().to_logical::<f64>(scale);
+        let pos = mon.position().to_logical::<f64>(scale);
+        let _ = w.set_position(tauri::LogicalPosition::new(
+            pos.x + size.width - 158.0,
+            pos.y + 14.0,
+        ));
+    }
+    let _ = w.show();
+    // Never steal focus: this appears mid-read, and taking focus would yank the
+    // caret out of whatever the user is actually working in.
+    let _ = w.set_always_on_top(true);
+}
+
+fn hide_player(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("player") {
+        let _ = w.hide();
+    }
+}
+
+/// Spawn a client and keep the transport visible for exactly as long as it
+/// runs. Fire-and-forget left the user with no way to stop audio: the mini
+/// player was a host feature that did not survive the move off Hammerspoon.
+fn run_client_monitored(app: &AppHandle, script: &str, args: Vec<String>) {
+    let Some(paths) = Paths::current() else {
+        let _ = app.emit("engine-missing", ());
+        return;
+    };
+    show_player(app);
+    // Resolve the script path up front: the &str cannot outlive this call, and
+    // the monitoring thread does.
+    let client = paths.client(script);
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        let status = Command::new(&paths.python)
+            .arg(client)
+            .args(&args)
+            .current_dir(&paths.root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = status;
+        hide_player(&app2);
+    });
+}
+
 #[tauri::command]
 fn read_selection(app: AppHandle) {
-    run_client(&app, "speak.py", &["--selection"]);
+    run_client_monitored(&app, "speak.py", vec!["--selection".into()]);
+}
+
+/// Pause or resume, returning the engine's own view of the state.
+#[tauri::command]
+fn toggle_playback() -> String {
+    let Some(paths) = Paths::current() else {
+        return "idle".into();
+    };
+    Command::new(&paths.python)
+        .arg(paths.client("speak.py"))
+        .arg("--toggle")
+        .current_dir(&paths.root)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "idle".into())
 }
 
 #[tauri::command]
 fn stop_speaking(app: AppHandle) {
     run_client(&app, "speak.py", &["--stop"]);
+    hide_player(&app);
 }
 
 #[tauri::command]
 fn snip_and_read(app: AppHandle) {
-    run_client(&app, "snip.py", &["--speak"]);
+    // The crosshair comes first, so the transport only appears once snip.py
+    // hands off to playback — showing it during selection would cover the very
+    // thing being selected.
+    run_client_monitored(&app, "snip.py", vec!["--speak".into()]);
 }
 
 #[tauri::command]
 fn speak_text(app: AppHandle, text: String) {
-    run_client(&app, "speak.py", &["--text", &text]);
+    run_client_monitored(&app, "speak.py", vec!["--text".into(), text]);
 }
 
 /// Type the transcript into whatever has focus.
@@ -532,6 +603,7 @@ pub fn run() {
             stop_speaking,
             snip_and_read,
             speak_text,
+            toggle_playback,
             hotkeys
         ])
         .setup(|app| {

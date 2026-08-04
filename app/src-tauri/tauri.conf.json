@@ -13,11 +13,28 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
+        "url": "index.html",
         "title": "Kokoro Voice",
         "width": 620,
         "height": 780,
         "resizable": true,
         "visible": false
+      },
+      {
+        "label": "player",
+        "url": "player.html",
+        "title": "Playing",
+        "width": 140,
+        "height": 42,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "shadow": false,
+        "focus": false
       }
     ],
     "security": {

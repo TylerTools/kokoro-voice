@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Playing</title>
+    <style>
+      /* A floating control, not a document: no scrollbars, no selection, and
+         the whole surface is draggable except the buttons themselves. */
+      html, body {
+        margin: 0; padding: 0; height: 100%; overflow: hidden;
+        background: transparent; user-select: none; cursor: default;
+      }
+      #bar {
+        display: flex; align-items: center; height: 100%;
+        background: rgba(30, 30, 33, 0.94);
+        border-radius: 10px;
+        -webkit-backdrop-filter: blur(12px);
+        font: 15px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      }
+      button {
+        flex: 1; height: 100%; border: 0; background: transparent;
+        color: rgba(255,255,255,0.95); font-size: 15px; cursor: pointer;
+      }
+      button:hover { background: rgba(255,255,255,0.08); }
+      button:active { background: rgba(255,255,255,0.15); }
+      #toggle { color: #59b8ff; }
+      #sep { width: 1px; height: 20px; background: rgba(255,255,255,0.18); }
+      /* Drag handles flank the buttons so the panel can be moved without a
+         title bar, while clicks on the controls still register. */
+      .grip { width: 12px; height: 100%; -webkit-app-region: drag; }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <div class="grip"></div>
+      <button id="toggle" title="Pause / resume">❙❙</button>
+      <div id="sep"></div>
+      <button id="stop" title="Stop">■</button>
+      <div class="grip"></div>
+    </div>
+    <script type="module">
+      import { invoke } from "@tauri-apps/api/core";
+
+      const toggle = document.getElementById("toggle");
+
+      toggle.addEventListener("click", async () => {
+        // The engine owns the truth about paused/playing; ask it rather than
+        // tracking a duplicate copy of that state here.
+        const state = await invoke("toggle_playback");
+        toggle.textContent = state === "paused" ? "▶" : "❙❙";
+      });
+
+      document.getElementById("stop").addEventListener("click", () => {
+        invoke("stop_speaking");
+      });
+    </script>
+  </body>
+</html>
