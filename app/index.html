@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kokoro Voice</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <h1>Kokoro Voice</h1>
+        <p class="sub">Read aloud, dictation, and screen OCR — all on this machine.</p>
+      </div>
+      <div id="status" class="status status--unknown">
+        <span class="dot"></span><span id="status-text">checking…</span>
+      </div>
+    </header>
+
+    <section class="card private">
+      <strong>Nothing leaves this computer.</strong>
+      The voices and the speech recognition run locally. There is no account and
+      no API key, and once installed the engine makes no network calls at all.
+    </section>
+
+    <h2>What it does</h2>
+
+    <section class="card feature">
+      <div class="feature-head">
+        <h3>Read aloud</h3>
+        <kbd id="key-read">⌃⌘</kbd>
+      </div>
+      <p>
+        Select text in any app and press the key. Press again with something
+        <em>new</em> selected to switch to it; press with nothing new selected to
+        pause and resume.
+      </p>
+      <div class="row">
+        <button data-cmd="read_selection">Read my selection now</button>
+        <button class="ghost" data-cmd="stop_speaking">Stop</button>
+      </div>
+    </section>
+
+    <section class="card feature">
+      <div class="feature-head">
+        <h3>Dictate</h3>
+        <kbd id="key-dictate">⇧⌘</kbd>
+      </div>
+      <p>
+        Hold the key, speak, then let go. What you said is typed into whatever
+        you were working in, and also copied to the clipboard as a backup — that
+        copy is cleared again after 45 seconds so it doesn't linger.
+      </p>
+      <p class="perm">Needs <strong>Microphone</strong> permission.</p>
+    </section>
+
+    <section class="card feature">
+      <div class="feature-head">
+        <h3>Snip &amp; read</h3>
+        <kbd id="key-snip">F7</kbd>
+      </div>
+      <p>
+        Press the key and drag a box around anything on screen — it gets read to
+        you. This is for text you <em>can't</em> select: pictures, PDFs, video
+        frames, screenshots someone sent you. The screenshot is deleted the
+        moment the words are pulled out of it.
+      </p>
+      <div class="row">
+        <button data-cmd="snip_and_read">Try a snip now</button>
+      </div>
+      <p class="perm">Needs <strong>Screen Recording</strong> permission.</p>
+    </section>
+
+    <h2>Try the voice</h2>
+    <section class="card">
+      <div class="row">
+        <input id="preview-text" type="text" spellcheck="false"
+               value="Everything here runs on your own computer." />
+        <button data-cmd="speak_text" data-arg="preview-text">Speak it</button>
+      </div>
+    </section>
+
+    <h2>Permissions</h2>
+    <section class="card">
+      <p>
+        macOS asks before any app can see what you have selected, hear your
+        microphone, or read your screen. You'll be prompted the first time you
+        use each feature. To change an answer later:
+      </p>
+      <ul class="perms">
+        <li><strong>Accessibility</strong> — read the selected text, type dictation</li>
+        <li><strong>Microphone</strong> — dictation</li>
+        <li><strong>Screen Recording</strong> — snip &amp; read</li>
+      </ul>
+      <button class="ghost" id="open-privacy">Open Privacy &amp; Security</button>
+    </section>
+
+    <footer>
+      <span id="detail">—</span>
+      <a href="https://github.com/TylerTools/kokoro-voice" target="_blank" rel="noreferrer">Source</a>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

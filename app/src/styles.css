@@ -1,0 +1,169 @@
+:root {
+  --bg: #f6f6f7;
+  --card: #ffffff;
+  --ink: #1b1b1f;
+  --muted: #6c6c78;
+  --line: #e3e3e8;
+  --accent: #2f6df6;
+  --ok: #1f9d55;
+  --warn: #d08700;
+  --down: #d33a3a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141417;
+    --card: #1d1d21;
+    --ink: #f2f2f5;
+    --muted: #9a9aa6;
+    --line: #2c2c33;
+    --accent: #5b8dff;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 26px 30px 34px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+h1 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+.sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+
+h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin: 26px 0 10px;
+  font-weight: 600;
+}
+
+h3 { font-size: 15px; margin: 0; }
+
+/* ── status pill ─────────────────────────────────────────────────────────── */
+.status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.status--ok      .dot { background: var(--ok); }
+.status--warn    .dot { background: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
+.status--down    .dot { background: var(--down); }
+.status--unknown .dot { background: var(--muted); }
+
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }
+@media (prefers-reduced-motion: reduce) { .dot { animation: none !important } }
+
+/* ── cards ───────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 16px 18px;
+  margin-bottom: 12px;
+}
+.card p { margin: 0 0 10px; }
+.card p:last-child { margin-bottom: 0; }
+
+.private {
+  border-left: 3px solid var(--ok);
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.private strong { color: var(--ink); }
+
+.feature-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+kbd {
+  font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  padding: 5px 9px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.perm { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+
+.perms { margin: 10px 0 14px; padding-left: 18px; color: var(--muted); font-size: 13px; }
+.perms strong { color: var(--ink); }
+
+/* ── controls ────────────────────────────────────────────────────────────── */
+.row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+
+button {
+  font: inherit;
+  font-weight: 500;
+  padding: 8px 15px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  min-width: 92px;
+  transition: filter 0.12s ease;
+}
+button:hover { filter: brightness(1.08); }
+button:active { filter: brightness(0.94); }
+
+button.ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+input[type="text"] {
+  flex: 1;
+  font: inherit;
+  padding: 8px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  min-width: 0;
+}
+input[type="text"]:focus,
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+footer a { color: var(--accent); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
