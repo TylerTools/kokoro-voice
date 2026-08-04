@@ -30,6 +30,9 @@ struct Engine(Mutex<Option<Child>>);
 /// running: holding a push-to-talk key fires Pressed repeatedly.
 static DICTATING: AtomicBool = AtomicBool::new(false);
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
+/// Set while we are intentionally shutting down, so the watchdog does not
+/// helpfully resurrect the engine we are trying to stop.
+static QUITTING: AtomicBool = AtomicBool::new(false);
 
 // ── locations ────────────────────────────────────────────────────────────────
 
@@ -134,7 +137,48 @@ fn start_engine(paths: &Paths) -> Option<Child> {
         .ok()
 }
 
+/// Keep the engine alive.
+///
+/// launchd used to do this with KeepAlive and it was lost in the move to the
+/// app. Without it a crashed engine stays dead until the app is quit and
+/// reopened, and the failure is INVISIBLE — hotkeys simply stop doing
+/// anything, which reads as "the app is broken".
+fn start_watchdog(app: AppHandle) {
+    std::thread::spawn(move || {
+        // Give the first start time to bind before we begin judging it.
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        let mut failures = 0u32;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if QUITTING.load(Ordering::SeqCst) || !is_installed() {
+                continue;
+            }
+            let url = format!("http://127.0.0.1:{}/health", port());
+            let ok = Command::new("curl")
+                .args(["-fsS", "-m", "4", "-o", "/dev/null", &url])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                failures = 0;
+                continue;
+            }
+            // Two consecutive misses, not one: the engine is unresponsive for
+            // several seconds while a long synthesis holds the GIL, and
+            // restarting mid-sentence would be worse than waiting.
+            failures += 1;
+            if failures < 2 {
+                continue;
+            }
+            failures = 0;
+            let _ = app.emit("engine-restarting", ());
+            spawn_engine_and_record(&app);
+        }
+    });
+}
+
 fn stop_engine(app: &AppHandle) {
+    QUITTING.store(true, Ordering::SeqCst);
     if let Some(engine) = app.try_state::<Engine>() {
         if let Ok(mut guard) = engine.0.lock() {
             if let Some(mut child) = guard.take() {
@@ -459,6 +503,11 @@ fn show_player(app: &AppHandle) {
     let _ = w.set_always_on_top(true);
 }
 
+/// Tell the transport what it is representing: "playing" or "recording".
+fn set_player_mode(app: &AppHandle, mode: &str) {
+    let _ = app.emit("player-mode", mode);
+}
+
 fn hide_player(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("player") {
         let _ = w.hide();
@@ -474,6 +523,7 @@ fn run_client_monitored(app: &AppHandle, script: &str, args: Vec<String>) {
         return;
     };
     show_player(app);
+    set_player_mode(app, "playing");
     // Resolve the script path up front: the &str cannot outlive this call, and
     // the monitoring thread does.
     let client = paths.client(script);
@@ -493,6 +543,12 @@ fn run_client_monitored(app: &AppHandle, script: &str, args: Vec<String>) {
 
 #[tauri::command]
 fn read_selection(app: AppHandle) {
+    // A synthetic Cmd+C mid-recording lands in whatever app has focus, and both
+    // paths contend for the pasteboard. The previous host refused for the same
+    // reason.
+    if DICTATING.load(Ordering::SeqCst) {
+        return;
+    }
     let mut args = vec!["--selection".to_string()];
     args.extend(voice_args());
     run_client_monitored(&app, "speak.py", args);
@@ -521,12 +577,40 @@ fn stop_speaking(app: AppHandle) {
     hide_player(&app);
 }
 
+/// Snip, then read what was captured.
+///
+/// The app orchestrates the two halves rather than letting snip.py invoke the
+/// speak client itself. That fixes two things at once:
+///   - the transport is no longer shown during the crosshair, where it covered
+///     the very region being selected and could be captured inside the snip;
+///   - the chosen voice and speed reach the playback, which they never did when
+///     snip.py spawned speak.py internally with no arguments.
 #[tauri::command]
 fn snip_and_read(app: AppHandle) {
-    // The crosshair comes first, so the transport only appears once snip.py
-    // hands off to playback — showing it during selection would cover the very
-    // thing being selected.
-    run_client_monitored(&app, "snip.py", vec!["--speak".into()]);
+    if DICTATING.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(paths) = Paths::current() else {
+        let _ = app.emit("engine-missing", ());
+        return;
+    };
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        // No player yet: the crosshair IS the feedback, and anything floating
+        // on screen would be in the way.
+        let out = Command::new(&paths.python)
+            .arg(paths.client("snip.py"))
+            .current_dir(&paths.root)
+            .output();
+        let Ok(out) = out else { return };
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if text.is_empty() || text.starts_with("CANCELLED") || text.starts_with("ERROR") {
+            return;
+        }
+        let mut args = vec!["--text".to_string(), text];
+        args.extend(voice_args());
+        run_client_monitored(&app2, "speak.py", args);
+    });
 }
 
 #[tauri::command]
@@ -565,6 +649,29 @@ fn dictation_start(app: &AppHandle) {
         DICTATING.store(false, Ordering::SeqCst);
         return;
     };
+
+    // DUCK: pause read-aloud before the microphone opens, or it transcribes our
+    // own speech back at us. Only resume what WE paused — the user may have
+    // paused deliberately beforehand.
+    let ducked = {
+        let st = playback_state(&paths);
+        if st == "playing" {
+            let _ = Command::new(&paths.python)
+                .arg(paths.client("speak.py"))
+                .arg("--pause")
+                .current_dir(&paths.root)
+                .status();
+            true
+        } else {
+            false
+        }
+    };
+
+    // Visible feedback. Without it, push-to-talk gives no sign the mic is open,
+    // and a failure is indistinguishable from nothing happening.
+    show_player(app);
+    set_player_mode(app, "recording");
+
     let app2 = app.clone();
     std::thread::spawn(move || {
         let out = Command::new(&paths.python)
@@ -573,6 +680,14 @@ fn dictation_start(app: &AppHandle) {
             .current_dir(&paths.root)
             .output();
         DICTATING.store(false, Ordering::SeqCst);
+        hide_player(&app2);
+        if ducked {
+            let _ = Command::new(&paths.python)
+                .arg(paths.client("speak.py"))
+                .arg("--resume")
+                .current_dir(&paths.root)
+                .status();
+        }
         let Ok(out) = out else { return };
         for line in String::from_utf8_lossy(&out.stdout).lines() {
             if let Some(text) = line.strip_prefix("TEXT ") {
@@ -581,6 +696,18 @@ fn dictation_start(app: &AppHandle) {
             }
         }
     });
+}
+
+/// idle | playing | paused, straight from the speak client.
+fn playback_state(paths: &Paths) -> String {
+    Command::new(&paths.python)
+        .arg(paths.client("speak.py"))
+        .arg("--status")
+        .current_dir(&paths.root)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
 }
 
 fn dictation_stop(app: &AppHandle) {
@@ -727,6 +854,14 @@ fn install_signal_handlers(app: AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // A second launch would spawn a second engine and the two would fight
+        // over the port. Focus the existing window instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -757,6 +892,7 @@ pub fn run() {
                 let _ = w.set_focus();
             }
             install_signal_handlers(handle.clone());
+            start_watchdog(handle.clone());
             if let Err(e) = register_hotkeys(&handle) {
                 eprintln!("{e}");
             }

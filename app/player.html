@@ -24,6 +24,16 @@
       button:hover { background: rgba(255,255,255,0.08); }
       button:active { background: rgba(255,255,255,0.15); }
       #toggle { color: #59b8ff; }
+      /* Recording is a distinct state, not a variant of playing: the controls
+         do not apply, so they are replaced rather than restyled. */
+      #rec { display: none; flex: 1; align-items: center; justify-content: center;
+             gap: 8px; color: #fff; font-size: 12.5px; }
+      #rec .dot { width: 9px; height: 9px; border-radius: 50%; background: #ff5f56;
+                  animation: blink 1.1s ease-in-out infinite; }
+      @keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: 0.25 } }
+      @media (prefers-reduced-motion: reduce) { #rec .dot { animation: none } }
+      body.recording #toggle, body.recording #sep, body.recording #stop { display: none; }
+      body.recording #rec { display: flex; }
       #sep { width: 1px; height: 20px; background: rgba(255,255,255,0.18); }
       /* Drag handles flank the buttons so the panel can be moved without a
          title bar, while clicks on the controls still register. */
@@ -36,10 +46,16 @@
       <button id="toggle" title="Pause / resume">❙❙</button>
       <div id="sep"></div>
       <button id="stop" title="Stop">■</button>
+      <div id="rec"><span class="dot"></span><span>Listening…</span></div>
       <div class="grip"></div>
     </div>
     <script type="module">
       import { invoke } from "@tauri-apps/api/core";
+      import { listen } from "@tauri-apps/api/event";
+
+      listen("player-mode", (e) => {
+        document.body.classList.toggle("recording", e.payload === "recording");
+      });
 
       const toggle = document.getElementById("toggle");
 
