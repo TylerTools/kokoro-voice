@@ -1,27 +1,81 @@
 // Kokoro Voice — desktop app.
 //
-// This is the shell: tray icon, settings UI, and — importantly — it OWNS THE
-// ENGINE PROCESS. Starting the app starts the local service; quitting stops it.
-// That is what makes this one piece of software rather than a service you
-// install separately plus a config file you symlink into someone else's app.
+// The shell: first-run setup, tray, global hotkeys, settings UI, and ownership
+// of the engine process. Launching starts the engine; quitting stops it.
+//
+// The engine SOURCE ships inside the app bundle (a few small Python files), but
+// the heavy parts — the Python environment and ~500MB of model weights — are
+// built into the user's Application Support directory on first run. That keeps
+// the download at ~10MB instead of ~1.3GB, and lets the app be updated without
+// re-shipping the models.
 //
 // The actual work is still done by the Python clients (speak/dictate/snip),
-// which are measured, debugged, and shared with the Windows build. The shell
-// invokes them rather than reimplementing their logic in Rust.
+// which are measured, debugged, and shared with the Windows build.
 
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager, State,
+    AppHandle, Emitter, Manager,
 };
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-/// Handle on the engine process so we can stop what we started.
 struct Engine(Mutex<Option<Child>>);
 
-/// Resolved once at startup: where the Python runtime and the service live.
+/// Guards against key auto-repeat re-entering the recorder while it is already
+/// running: holding a push-to-talk key fires Pressed repeatedly.
+static DICTATING: AtomicBool = AtomicBool::new(false);
+static SIGNALLED: AtomicBool = AtomicBool::new(false);
+
+// ── locations ────────────────────────────────────────────────────────────────
+
+fn home() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// Where the installed engine lives. Deliberately NOT inside the .app bundle:
+/// a bundle should be replaceable by dragging a new one over it, and writing
+/// inside it breaks the code signature.
+fn engine_root() -> std::path::PathBuf {
+    home().join("Library/Application Support/Kokoro Voice/engine")
+}
+
+fn config_dir() -> std::path::PathBuf {
+    let d = home().join(".config/kokoro");
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
+fn pidfile() -> std::path::PathBuf {
+    config_dir().join("engine.pid")
+}
+
+fn python_path(root: &std::path::Path) -> std::path::PathBuf {
+    if cfg!(windows) {
+        root.join(".venv/Scripts/python.exe")
+    } else {
+        root.join(".venv/bin/python")
+    }
+}
+
+fn port() -> String {
+    std::env::var("KOKORO_PORT").unwrap_or_else(|_| "8123".into())
+}
+
+/// True once the environment and both model files are in place.
+fn is_installed() -> bool {
+    let root = engine_root();
+    python_path(&root).exists()
+        && root.join("server.py").exists()
+        && root.join("models/kokoro-v1.0.fp16.onnx").exists()
+        && root.join("models/voices-v1.0.bin").exists()
+}
+
 #[derive(Clone)]
 struct Paths {
     python: std::path::PathBuf,
@@ -29,31 +83,21 @@ struct Paths {
 }
 
 impl Paths {
-    /// In a bundled .app the engine ships inside Resources. In development it
-    /// sits in the repo above us. Try the bundle first so a shipped build never
-    /// accidentally picks up a developer checkout.
-    fn resolve(app: &tauri::AppHandle) -> Option<Self> {
-        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-        if let Ok(res) = app.path().resource_dir() {
-            candidates.push(res.join("engine"));
+    fn current() -> Option<Self> {
+        let root = engine_root();
+        let python = python_path(&root);
+        if python.exists() && root.join("server.py").exists() {
+            return Some(Paths { python, root });
         }
+        // Development fallback: a repo checkout with its own .venv.
         if let Ok(cwd) = std::env::current_dir() {
-            candidates.push(cwd.clone());
-            if let Ok(up) = cwd.join("..").canonicalize() {
-                candidates.push(up);
-            }
-            if let Ok(up2) = cwd.join("../..").canonicalize() {
-                candidates.push(up2);
-            }
-        }
-        for root in candidates {
-            let python = if cfg!(windows) {
-                root.join(".venv/Scripts/python.exe")
-            } else {
-                root.join(".venv/bin/python")
-            };
-            if python.exists() && root.join("server.py").exists() {
-                return Some(Paths { python, root });
+            for c in [cwd.clone(), cwd.join(".."), cwd.join("../..")] {
+                if let Ok(root) = c.canonicalize() {
+                    let python = python_path(&root);
+                    if python.exists() && root.join("server.py").exists() {
+                        return Some(Paths { python, root });
+                    }
+                }
             }
         }
         None
@@ -64,37 +108,32 @@ impl Paths {
     }
 }
 
-fn port() -> String {
-    std::env::var("KOKORO_PORT").unwrap_or_else(|_| "8123".into())
-}
+// ── engine lifecycle ─────────────────────────────────────────────────────────
 
-/// Start the engine as a child process.
-///
-/// HF_HUB_OFFLINE is set here rather than left to chance: without it the model
-/// hub is contacted on every load to resolve "latest", which breaks the offline
-/// guarantee and lets an upstream change swap the weights silently.
-fn start_engine(paths: &Paths) -> Result<Child, String> {
+fn start_engine(paths: &Paths) -> Option<Child> {
     Command::new(&paths.python)
         .args([
             "-m",
             "uvicorn",
             "server:app",
-            // Loopback only. Never 0.0.0.0 — that would publish the engine to
-            // every network the machine joins.
+            // Loopback only. Never 0.0.0.0.
             "--host",
             "127.0.0.1",
             "--port",
             &port(),
         ])
         .current_dir(&paths.root)
+        // Without this the model hub is contacted on every load to resolve
+        // "latest", which breaks the offline guarantee and lets an upstream
+        // change swap the weights silently.
         .env("HF_HUB_OFFLINE", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("could not start the engine: {e}"))
+        .ok()
 }
 
-fn stop_engine(app: &tauri::AppHandle) {
+fn stop_engine(app: &AppHandle) {
     if let Some(engine) = app.try_state::<Engine>() {
         if let Ok(mut guard) = engine.0.lock() {
             if let Some(mut child) = guard.take() {
@@ -106,100 +145,228 @@ fn stop_engine(app: &tauri::AppHandle) {
     let _ = std::fs::remove_file(pidfile());
 }
 
-/// Where we record the engine PID we spawned.
-fn pidfile() -> std::path::PathBuf {
-    let base = dirs_config().join("kokoro");
-    let _ = std::fs::create_dir_all(&base);
-    base.join("engine.pid")
-}
-
-fn dirs_config() -> std::path::PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
-        std::path::PathBuf::from(home).join(".config")
-    } else {
-        std::env::temp_dir()
-    }
-}
-
 /// Kill an engine left behind by a previous run.
 ///
-/// Necessary because a SIGKILL/SIGTERM to the app, or a crash, never runs our
-/// cleanup — verified: killing the app left the engine alive and still holding
-/// the port, which would make the next launch fail to bind. A recorded PID is
-/// the only way to tell OUR orphan apart from something else on that port.
+/// A SIGKILL or a crash never runs our cleanup — verified — and the orphan then
+/// holds the port so the next launch cannot bind. The recorded PID is checked
+/// against the live command line first: PIDs get recycled, and killing a
+/// stranger's process would be far worse than leaving a stale file behind.
 fn reap_orphan() {
     let path = pidfile();
     let Ok(text) = std::fs::read_to_string(&path) else {
         return;
     };
-    let Ok(pid) = text.trim().parse::<i32>() else {
-        let _ = std::fs::remove_file(&path);
-        return;
-    };
-    // Confirm it is actually our engine before signalling anything: PIDs are
-    // recycled, and killing a stranger's process would be far worse than
-    // leaving a stale file behind.
-    let looks_like_ours = Command::new("ps")
-        .args(["-o", "command=", "-p", &pid.to_string()])
-        .output()
-        .ok()
-        .map(|o| {
-            let c = String::from_utf8_lossy(&o.stdout);
-            c.contains("uvicorn") && c.contains("server:app")
-        })
-        .unwrap_or(false);
-    if looks_like_ours {
-        let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
-        std::thread::sleep(std::time::Duration::from_millis(400));
+    if let Ok(pid) = text.trim().parse::<i32>() {
+        let ours = Command::new("ps")
+            .args(["-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .map(|o| {
+                let c = String::from_utf8_lossy(&o.stdout);
+                c.contains("uvicorn") && c.contains("server:app")
+            })
+            .unwrap_or(false);
+        if ours {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
     }
     let _ = std::fs::remove_file(&path);
 }
 
-/// Stop the engine on SIGTERM/SIGINT.
-///
-/// Tauri's exit hooks only run when the app quits through its own event loop.
-/// A signal — Activity Monitor, `kill`, a logout — bypasses them entirely.
-fn install_signal_handlers(app: tauri::AppHandle) {
-    unsafe {
-        libc::signal(libc::SIGTERM, handle_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGINT, handle_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGHUP, handle_signal as *const () as libc::sighandler_t);
+fn spawn_engine_and_record(app: &AppHandle) {
+    let Some(paths) = Paths::current() else { return };
+    reap_orphan();
+    let child = start_engine(&paths);
+    if let Some(c) = child.as_ref() {
+        let _ = std::fs::write(pidfile(), c.id().to_string());
     }
-    // The handler itself must stay async-signal-safe, so it only flips a flag;
-    // this thread does the actual teardown.
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        if SIGNALLED.load(std::sync::atomic::Ordering::Relaxed) {
-            stop_engine(&app);
-            std::process::exit(0);
+    if let Some(engine) = app.try_state::<Engine>() {
+        if let Ok(mut g) = engine.0.lock() {
+            *g = child;
         }
-    });
+    }
 }
 
-static SIGNALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// ── first-run setup ──────────────────────────────────────────────────────────
 
-extern "C" fn handle_signal(_sig: libc::c_int) {
-    SIGNALLED.store(true, std::sync::atomic::Ordering::Relaxed);
+fn emit_step(app: &AppHandle, pct: u32, message: &str) {
+    let _ = app.emit(
+        "setup-progress",
+        serde_json::json!({ "pct": pct, "message": message }),
+    );
 }
 
-/// Ask the engine how it is doing. Returns the raw /health payload, or a
-/// synthetic status the UI can render while things are still coming up.
+fn find_or_install_uv(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    for c in [
+        home().join(".local/bin/uv"),
+        std::path::PathBuf::from("/opt/homebrew/bin/uv"),
+        std::path::PathBuf::from("/usr/local/bin/uv"),
+    ] {
+        if c.exists() {
+            return Ok(c);
+        }
+    }
+    emit_step(app, 18, "Downloading the Python manager…");
+    let st = Command::new("sh")
+        .arg("-c")
+        .arg("curl -LsSf https://astral.sh/uv/install.sh | sh")
+        .status()
+        .map_err(|e| format!("uv install: {e}"))?;
+    let path = home().join(".local/bin/uv");
+    if st.success() && path.exists() {
+        Ok(path)
+    } else {
+        Err("could not install uv (the Python manager)".into())
+    }
+}
+
+/// Build the engine into Application Support.
+///
+/// Every step is idempotent so an interrupted run can simply be retried — a
+/// half-built environment is the most likely failure and the least forgivable
+/// one to strand someone in.
+#[tauri::command]
+async fn setup_engine(app: AppHandle) -> Result<String, String> {
+    let root = engine_root();
+    std::fs::create_dir_all(&root).map_err(|e| format!("cannot create {root:?}: {e}"))?;
+
+    // 1. Copy the engine source out of the app bundle.
+    emit_step(&app, 5, "Unpacking…");
+    let src = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("no resource dir: {e}"))?
+        .join("engine-src");
+    if !src.exists() {
+        return Err(format!("engine source missing from the app bundle ({src:?})"));
+    }
+    for name in ["server.py", "requirements.txt", "requirements-macos.txt"] {
+        let from = src.join(name);
+        if from.exists() {
+            std::fs::copy(&from, root.join(name)).map_err(|e| format!("copy {name}: {e}"))?;
+        }
+    }
+    std::fs::create_dir_all(root.join("client")).ok();
+    for name in ["speak.py", "dictate.py", "snip.py"] {
+        let from = src.join("client").join(name);
+        if from.exists() {
+            std::fs::copy(&from, root.join("client").join(name))
+                .map_err(|e| format!("copy {name}: {e}"))?;
+        }
+    }
+
+    // 2. uv — manages Python without touching the system install.
+    emit_step(&app, 15, "Setting up Python…");
+    let uv = find_or_install_uv(&app)?;
+
+    // 3. Environment.
+    let venv_ok = Command::new(&uv)
+        .args(["venv", "--python", "3.12"])
+        .arg(root.join(".venv"))
+        .status()
+        .map_err(|e| format!("uv venv: {e}"))?;
+    if !venv_ok.success() {
+        return Err("could not create the Python environment".into());
+    }
+
+    emit_step(&app, 30, "Installing components… (a minute or two)");
+    for req in ["requirements.txt", "requirements-macos.txt"] {
+        let f = root.join(req);
+        if !f.exists() {
+            continue;
+        }
+        let st = Command::new(&uv)
+            .args(["pip", "install", "-r"])
+            .arg(&f)
+            .env("VIRTUAL_ENV", root.join(".venv"))
+            .status()
+            .map_err(|e| format!("uv pip install: {e}"))?;
+        if !st.success() {
+            return Err(format!("could not install {req}"));
+        }
+    }
+    // mlx-whisper declares torch but only imports it in the weight-CONVERSION
+    // path, which we never take. Verified that torch never enters sys.modules
+    // during import or a real transcribe(). Dropping it saves ~480MB.
+    let _ = Command::new(&uv)
+        .args(["pip", "uninstall", "torch"])
+        .env("VIRTUAL_ENV", root.join(".venv"))
+        .status();
+
+    // 4. Models — not redistributed, fetched from upstream. Sizes are verified
+    //    because a truncated download fails much later and far less obviously.
+    std::fs::create_dir_all(root.join("models")).ok();
+    let base = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0";
+    for (name, expected, pct) in [
+        ("kokoro-v1.0.fp16.onnx", 177_464_787u64, 55u32),
+        ("voices-v1.0.bin", 28_214_398u64, 80u32),
+    ] {
+        let dest = root.join("models").join(name);
+        if dest.metadata().map(|m| m.len()).ok() == Some(expected) {
+            continue;
+        }
+        emit_step(&app, pct, &format!("Downloading voices ({name})…"));
+        let st = Command::new("curl")
+            .args(["-fL", "--retry", "3", "-o"])
+            .arg(&dest)
+            .arg(format!("{base}/{name}"))
+            .status()
+            .map_err(|e| format!("download {name}: {e}"))?;
+        if !st.success() {
+            return Err(format!("could not download {name}"));
+        }
+        let got = dest.metadata().map(|m| m.len()).unwrap_or(0);
+        if got != expected {
+            let _ = std::fs::remove_file(&dest);
+            return Err(format!("{name} downloaded {got} bytes, expected {expected}"));
+        }
+    }
+
+    // 5. Auth token.
+    emit_step(&app, 92, "Finishing…");
+    let token_file = config_dir().join("token");
+    if std::fs::read_to_string(&token_file)
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        let out = Command::new(python_path(&root))
+            .args(["-c", "import secrets;print(secrets.token_urlsafe(32))"])
+            .output()
+            .map_err(|e| format!("token: {e}"))?;
+        std::fs::write(&token_file, out.stdout).map_err(|e| format!("token: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+
+    emit_step(&app, 100, "Ready");
+    spawn_engine_and_record(&app);
+    Ok("installed".into())
+}
+
+// ── commands ─────────────────────────────────────────────────────────────────
+
 #[tauri::command]
 fn engine_status() -> serde_json::Value {
+    if !is_installed() {
+        return serde_json::json!({ "status": "not-installed" });
+    }
     let url = format!("http://127.0.0.1:{}/health", port());
-    let out = Command::new("curl")
-        .args(["-fsS", "-m", "3", &url])
-        .output();
-    match out {
+    match Command::new("curl").args(["-fsS", "-m", "3", &url]).output() {
         Ok(o) if o.status.success() => serde_json::from_slice(&o.stdout)
             .unwrap_or_else(|_| serde_json::json!({ "status": "starting" })),
         _ => serde_json::json!({ "status": "down" }),
     }
 }
 
-/// Run one of the Python clients. Fire-and-forget: they own their own UX
-/// (crosshair, notifications, audio) and the shell must not block on them.
-fn run_client(paths: &Paths, script: &str, args: &[&str]) {
+fn run_client(app: &AppHandle, script: &str, args: &[&str]) {
+    let Some(paths) = Paths::current() else {
+        let _ = app.emit("engine-missing", ());
+        return;
+    };
     let _ = Command::new(&paths.python)
         .arg(paths.client(script))
         .args(args)
@@ -210,25 +377,148 @@ fn run_client(paths: &Paths, script: &str, args: &[&str]) {
 }
 
 #[tauri::command]
-fn read_selection(paths: State<'_, Paths>) {
-    run_client(&paths, "speak.py", &["--selection"]);
+fn read_selection(app: AppHandle) {
+    run_client(&app, "speak.py", &["--selection"]);
 }
 
 #[tauri::command]
-fn stop_speaking(paths: State<'_, Paths>) {
-    run_client(&paths, "speak.py", &["--stop"]);
+fn stop_speaking(app: AppHandle) {
+    run_client(&app, "speak.py", &["--stop"]);
 }
 
 #[tauri::command]
-fn snip_and_read(paths: State<'_, Paths>) {
-    run_client(&paths, "snip.py", &["--speak"]);
+fn snip_and_read(app: AppHandle) {
+    run_client(&app, "snip.py", &["--speak"]);
 }
 
-/// Used by the settings window to preview a voice.
 #[tauri::command]
-fn speak_text(paths: State<'_, Paths>, text: String) {
-    run_client(&paths, "speak.py", &["--text", &text]);
+fn speak_text(app: AppHandle, text: String) {
+    run_client(&app, "speak.py", &["--text", &text]);
 }
+
+/// Type the transcript into whatever has focus.
+///
+/// Goes through System Events, so the app needs the Accessibility permission —
+/// the same grant that lets it read your selection. The text becomes an
+/// AppleScript string literal, so quotes and backslashes MUST be escaped: an
+/// unescaped quote would not merely break the script, it would change it.
+fn type_text(text: &str) {
+    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(r#"tell application "System Events" to keystroke "{escaped}""#);
+    let _ = Command::new("osascript")
+        .args(["-e", &script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Start recording. The transcript is typed when the recorder exits.
+fn dictation_start(app: &AppHandle) {
+    if DICTATING.swap(true, Ordering::SeqCst) {
+        return; // auto-repeat; already recording
+    }
+    let Some(paths) = Paths::current() else {
+        DICTATING.store(false, Ordering::SeqCst);
+        return;
+    };
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        let out = Command::new(&paths.python)
+            .arg(paths.client("dictate.py"))
+            .arg("--record")
+            .current_dir(&paths.root)
+            .output();
+        DICTATING.store(false, Ordering::SeqCst);
+        let Ok(out) = out else { return };
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some(text) = line.strip_prefix("TEXT ") {
+                type_text(text);
+                let _ = app2.emit("dictated", text);
+            }
+        }
+    });
+}
+
+fn dictation_stop(app: &AppHandle) {
+    run_client(app, "dictate.py", &["--stop"]);
+}
+
+// ── hotkeys ──────────────────────────────────────────────────────────────────
+
+const HK_READ: &str = "Control+Alt+Command+R";
+const HK_SNIP: &str = "Control+Alt+Command+S";
+const HK_DICTATE: &str = "Control+Alt+Command+D";
+
+#[tauri::command]
+fn hotkeys() -> serde_json::Value {
+    serde_json::json!({ "read": HK_READ, "snip": HK_SNIP, "dictate": HK_DICTATE })
+}
+
+fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
+    let read: Shortcut = HK_READ.parse().map_err(|_| "bad read shortcut")?;
+    let snip: Shortcut = HK_SNIP.parse().map_err(|_| "bad snip shortcut")?;
+    let dictate: Shortcut = HK_DICTATE.parse().map_err(|_| "bad dictate shortcut")?;
+
+    app.global_shortcut()
+        .on_shortcuts([read, snip, dictate], move |app, sc, event| {
+            // Read and snip fire once on press. Dictation is PUSH TO TALK:
+            // record while held, transcribe on release. Toggle semantics were
+            // rejected because a start with no matching stop leaves the
+            // microphone recording invisibly.
+            match event.state {
+                ShortcutState::Pressed => {
+                    if sc == &read {
+                        read_selection(app.clone());
+                    } else if sc == &snip {
+                        snip_and_read(app.clone());
+                    } else if sc == &dictate {
+                        dictation_start(app);
+                    }
+                }
+                ShortcutState::Released => {
+                    if sc == &dictate {
+                        dictation_stop(app);
+                    }
+                }
+            }
+        })
+        .map_err(|e| format!("could not register hotkeys: {e}"))
+}
+
+// ── signals ──────────────────────────────────────────────────────────────────
+
+extern "C" fn handle_signal(_sig: libc::c_int) {
+    SIGNALLED.store(true, Ordering::Relaxed);
+}
+
+/// Tauri's exit hooks only run when the app quits through its own event loop.
+/// A signal — Activity Monitor, `kill`, a logout — bypasses them entirely, and
+/// the engine would be left holding the port.
+fn install_signal_handlers(app: AppHandle) {
+    unsafe {
+        libc::signal(
+            libc::SIGTERM,
+            handle_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGINT,
+            handle_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGHUP,
+            handle_signal as *const () as libc::sighandler_t,
+        );
+    }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if SIGNALLED.load(Ordering::Relaxed) {
+            stop_engine(&app);
+            std::process::exit(0);
+        }
+    });
+}
+
+// ── app ──────────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -237,31 +527,32 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             engine_status,
+            setup_engine,
             read_selection,
             stop_speaking,
             snip_and_read,
-            speak_text
+            speak_text,
+            hotkeys
         ])
         .setup(|app| {
-            let paths = Paths::resolve(&app.handle())
-                .ok_or("could not locate the engine (.venv + server.py)")?;
-            app.manage(paths.clone());
+            let handle = app.handle().clone();
+            app.manage(Engine(Mutex::new(None)));
 
-            // Clear any engine left behind by a previous run BEFORE spawning,
-            // or the new one cannot bind the port.
-            reap_orphan();
-
-            let child = start_engine(&paths).ok();
-            if let Some(c) = child.as_ref() {
-                let _ = std::fs::write(pidfile(), c.id().to_string());
+            if is_installed() {
+                spawn_engine_and_record(&handle);
+            } else if let Some(w) = app.get_webview_window("main") {
+                // Nothing to run yet — show the window so the first thing a new
+                // user meets is the setup screen, not a silent tray icon.
+                let _ = w.show();
+                let _ = w.set_focus();
             }
-            app.manage(Engine(Mutex::new(child)));
-            install_signal_handlers(app.handle().clone());
+            install_signal_handlers(handle.clone());
+            if let Err(e) = register_hotkeys(&handle) {
+                eprintln!("{e}");
+            }
 
-            // The window is a settings panel, not the app itself — this lives
-            // in the menu bar the way a utility should.
-            let read = MenuItem::with_id(app, "read", "Read selection", true, None::<&str>)?;
-            let snip = MenuItem::with_id(app, "snip", "Snip & read", true, None::<&str>)?;
+            let read = MenuItem::with_id(app, "read", "Read selection", true, Some(HK_READ))?;
+            let snip = MenuItem::with_id(app, "snip", "Snip & read", true, Some(HK_SNIP))?;
             let stop = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "Settings…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Kokoro Voice", true, None::<&str>)?;
@@ -271,35 +562,27 @@ pub fn run() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| {
-                    let paths = app.state::<Paths>();
-                    match event.id().as_ref() {
-                        "read" => run_client(&paths, "speak.py", &["--selection"]),
-                        "snip" => run_client(&paths, "snip.py", &["--speak"]),
-                        "stop" => run_client(&paths, "speak.py", &["--stop"]),
-                        "open" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "read" => read_selection(app.clone()),
+                    "snip" => snip_and_read(app.clone()),
+                    "stop" => stop_speaking(app.clone()),
+                    "open" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
                         }
-                        "quit" => {
-                            // Stop what we started. A leaked engine still
-                            // holding the port is exactly the failure that
-                            // makes people think the app "didn't really quit".
-                            stop_engine(app);
-                            app.exit(0);
-                        }
-                        _ => {}
                     }
+                    "quit" => {
+                        stop_engine(app);
+                        app.exit(0);
+                    }
+                    _ => {}
                 })
                 .build(app)?;
 
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the settings window hides it rather than quitting: the
-            // app's real home is the tray.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();

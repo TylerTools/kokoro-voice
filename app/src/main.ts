@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { listen } from "@tauri-apps/api/event";
 
 type Health = {
   status: string;
@@ -28,6 +29,17 @@ async function refresh(): Promise<void> {
   }
 
   statusEl.classList.remove("status--ok", "status--warn", "status--down", "status--unknown");
+
+  // Not installed is a first-run state, not a failure — show setup, not an error.
+  const setup = document.getElementById("setup") as HTMLElement;
+  if (h.status === "not-installed") {
+    setup.hidden = false;
+    statusEl.classList.add("status--warn");
+    statusText.textContent = "Setup needed";
+    detail.textContent = "Download the voices to get started.";
+    return;
+  }
+  setup.hidden = true;
 
   if (h.status === "ok" && h.stt_ready) {
     statusEl.classList.add("status--ok");
@@ -74,6 +86,47 @@ document.querySelectorAll<HTMLButtonElement>("button[data-cmd]").forEach((btn) =
 
 document.getElementById("open-privacy")?.addEventListener("click", () => {
   openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy");
+});
+
+// Live setup progress from Rust.
+listen<{ pct: number; message: string }>("setup-progress", (e) => {
+  const wrap = document.getElementById("bar-wrap") as HTMLElement;
+  const bar = document.getElementById("bar") as HTMLElement;
+  const msg = document.getElementById("setup-msg") as HTMLElement;
+  wrap.hidden = false;
+  bar.style.width = `${e.payload.pct}%`;
+  msg.textContent = e.payload.message;
+});
+
+document.getElementById("setup-go")?.addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget as HTMLButtonElement;
+  const msg = document.getElementById("setup-msg") as HTMLElement;
+  btn.disabled = true;
+  btn.textContent = "Installing…";
+  try {
+    await invoke("setup_engine");
+    msg.textContent = "Done. Starting up…";
+  } catch (e) {
+    // Setup is resumable, so say so rather than leaving a dead end.
+    msg.textContent = `${e} — press Retry to pick up where it stopped.`;
+    btn.disabled = false;
+    btn.textContent = "Retry";
+    return;
+  }
+  setTimeout(refresh, 1500);
+});
+
+// Show the real hotkeys rather than hardcoding them in the markup.
+invoke<Record<string, string>>("hotkeys").then((hk) => {
+  const pretty = (s: string) =>
+    s.replace("CmdOrCtrl", "⌘").replace(/Shift/g, "⇧").replace(/\+/g, "");
+  const set = (id: string, v: string) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = pretty(v);
+  };
+  set("key-read", hk.read);
+  set("key-dictate", hk.dictate);
+  set("key-snip", hk.snip);
 });
 
 refresh();
