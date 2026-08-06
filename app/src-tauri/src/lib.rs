@@ -674,11 +674,35 @@ fn dictation_start(app: &AppHandle) {
 
     let app2 = app.clone();
     std::thread::spawn(move || {
-        let out = Command::new(&paths.python)
+        // STREAM the client's output rather than collecting it with .output().
+        // dictate.py announces TRANSCRIBING the moment recording ends, but a
+        // buffered read only delivers that once the process exits — about a
+        // second later, after Whisper has finished. The player therefore sat on
+        // "Listening…" with the mic already closed, which reads as stuck on and
+        // as though it were still recording you.
+        let child = Command::new(&paths.python)
             .arg(paths.client("dictate.py"))
             .arg("--record")
             .current_dir(&paths.root)
-            .output();
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+
+        let mut lines_out: Vec<String> = Vec::new();
+        if let Ok(mut child) = child {
+            if let Some(stdout) = child.stdout.take() {
+                use std::io::{BufRead, BufReader};
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if line.starts_with("TRANSCRIBING") {
+                        // Mic is closed; say so immediately.
+                        set_player_mode(&app2, "transcribing");
+                    }
+                    lines_out.push(line);
+                }
+            }
+            let _ = child.wait();
+        }
+
         DICTATING.store(false, Ordering::SeqCst);
         hide_player(&app2);
         if ducked {
@@ -688,8 +712,7 @@ fn dictation_start(app: &AppHandle) {
                 .current_dir(&paths.root)
                 .status();
         }
-        let Ok(out) = out else { return };
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
+        for line in lines_out {
             if let Some(text) = line.strip_prefix("TEXT ") {
                 type_text(text);
                 let _ = app2.emit("dictated", text);

@@ -32,8 +32,12 @@
                   animation: blink 1.1s ease-in-out infinite; }
       @keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: 0.25 } }
       @media (prefers-reduced-motion: reduce) { #rec .dot { animation: none } }
-      body.recording #toggle, body.recording #sep, body.recording #stop { display: none; }
-      body.recording #rec { display: flex; }
+      body.recording #toggle, body.recording #sep, body.recording #stop,
+      body.transcribing #toggle, body.transcribing #sep, body.transcribing #stop { display: none; }
+      body.recording #rec, body.transcribing #rec { display: flex; }
+      /* Transcribing is NOT recording: the mic is already closed, so the red
+         "live" dot would be a lie. Swap to a neutral working indicator. */
+      body.transcribing #rec .dot { background: #59b8ff; }
       #sep { width: 1px; height: 20px; background: rgba(255,255,255,0.18); }
       /* Drag handles flank the buttons so the panel can be moved without a
          title bar, while clicks on the controls still register. */
@@ -46,15 +50,21 @@
       <button id="toggle" title="Pause / resume">❙❙</button>
       <div id="sep"></div>
       <button id="stop" title="Stop">■</button>
-      <div id="rec"><span class="dot"></span><span>Listening…</span></div>
+      <div id="rec"><span class="dot"></span><span id="rec-label">Listening…</span></div>
       <div class="grip"></div>
     </div>
     <script type="module">
       import { invoke } from "@tauri-apps/api/core";
       import { listen } from "@tauri-apps/api/event";
 
+      const label = document.getElementById("rec-label");
       listen("player-mode", (e) => {
-        document.body.classList.toggle("recording", e.payload === "recording");
+        const mode = e.payload;
+        document.body.classList.toggle("recording", mode === "recording");
+        document.body.classList.toggle("transcribing", mode === "transcribing");
+        if (label) {
+          label.textContent = mode === "transcribing" ? "Transcribing…" : "Listening…";
+        }
       });
 
       const toggle = document.getElementById("toggle");
