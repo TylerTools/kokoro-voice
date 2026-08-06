@@ -118,8 +118,6 @@ document.getElementById("setup-go")?.addEventListener("click", async (ev) => {
 
 // Show the real hotkeys rather than hardcoding them in the markup.
 invoke<Record<string, string>>("hotkeys").then((hk) => {
-  const pretty = (s: string) =>
-    s.replace("CmdOrCtrl", "⌘").replace(/Shift/g, "⇧").replace(/\+/g, "");
   const set = (id: string, v: string) => {
     const el = document.getElementById(id);
     if (el) el.textContent = pretty(v);
@@ -169,38 +167,65 @@ async function initPrefs() {
 }
 
 // ── hotkey recorder ─────────────────────────────────────────────────────────
-// Captures whatever ARRIVES after the KVM has translated it, which is the only
-// reliable way to bind a key on a setup where modifiers may be rewritten in
-// transit. Typing a combination into a box would record what you MEANT, not
-// what the machine actually sees.
-let recTimer: number | undefined;
+// Captures a REAL key press in this window, so the binding is whatever actually
+// arrives — after any KVM has translated it. e.code is used rather than e.key
+// because a KVM can rewrite the produced character while the physical key code
+// survives.
+const MOD_GLYPH: Record<string, string> = {
+  Control: "\u2303", Alt: "\u2325", Shift: "\u21e7", Command: "\u2318",
+};
+
+function pretty(accel: string): string {
+  return accel
+    .split("+")
+    .map((p) => MOD_GLYPH[p] ?? p.replace(/^Key/, "").replace(/^Digit/, ""))
+    .join("");
+}
+
+function accelFrom(e: KeyboardEvent): string | null {
+  const mods: string[] = [];
+  if (e.ctrlKey) mods.push("Control");
+  if (e.altKey) mods.push("Alt");
+  if (e.shiftKey) mods.push("Shift");
+  if (e.metaKey) mods.push("Command");
+  const code = e.code;
+  // A modifier on its own is not a shortcut the OS can register.
+  if (/^(Control|Alt|Shift|Meta)(Left|Right)$/.test(code)) return null;
+  // Function keys are valid with no modifier; anything else needs one.
+  if (mods.length === 0 && !/^F\d+$/.test(code)) return null;
+  return [...mods, code].join("+");
+}
 
 document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) => {
-  btn.addEventListener("click", async () => {
+  btn.addEventListener("click", () => {
     const slot = btn.dataset.rec!;
     const original = btn.textContent;
     btn.textContent = "Press keys…";
     btn.classList.add("recording");
-    await invoke("record_chord", { slot });
 
-    clearInterval(recTimer);
-    let waited = 0;
-    recTimer = window.setInterval(async () => {
-      waited += 250;
-      const got = await invoke<{ slot: string; label: string } | null>("poll_recorded");
-      if (got) {
-        clearInterval(recTimer);
-        btn.textContent = original;
-        btn.classList.remove("recording");
-        const kbd = document.getElementById(`key-${got.slot}`);
-        if (kbd) kbd.textContent = got.label;
-      } else if (waited > 15000) {
-        // Give up rather than leaving the button stuck in "Press keys…".
-        clearInterval(recTimer);
-        btn.textContent = original;
-        btn.classList.remove("recording");
+    const finish = () => {
+      window.removeEventListener("keydown", onKey, true);
+      btn.textContent = original;
+      btn.classList.remove("recording");
+    };
+
+    const onKey = async (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.code === "Escape") { finish(); return; }
+      const accel = accelFrom(e);
+      if (!accel) return;   // still waiting for a full combination
+      finish();
+      try {
+        await invoke("set_hotkey", { slot, accelerator: accel });
+        const kbd = document.getElementById(`key-${slot}`);
+        if (kbd) kbd.textContent = pretty(accel);
+      } catch (err) {
+        const kbd = document.getElementById(`key-${slot}`);
+        if (kbd) kbd.textContent = String(err);
       }
-    }, 250);
+    };
+    window.addEventListener("keydown", onKey, true);
   });
 });
 

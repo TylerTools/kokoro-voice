@@ -1,4 +1,3 @@
-mod chords;
 // Kokoro Voice — desktop app.
 //
 // The shell: first-run setup, tray, global hotkeys, settings UI, and ownership
@@ -629,7 +628,6 @@ fn speak_text(app: AppHandle, text: String) {
 fn type_text(text: &str) {
     // Our own synthesized keystrokes go through the same event tap, so deafen
     // it while typing or a transcript could retrigger the gesture that made it.
-    chords::suppress(true);
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(r#"tell application "System Events" to keystroke "{escaped}""#);
     let _ = Command::new("osascript")
@@ -637,7 +635,6 @@ fn type_text(text: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    chords::suppress(false);
 }
 
 /// Start recording. The transcript is typed when the recorder exits.
@@ -749,76 +746,13 @@ fn dictation_stop(app: &AppHandle) {
 //
 // Working beats familiar. chords.rs is kept for machines without a KVM in the
 // path, but it is not what we depend on.
-// The keys actually asked for. BOTH mechanisms run at once — the chord tap for
-// ⌃⌘ / ⇧⌘, and accelerators as a parallel path — because on this machine the
-// KVM makes it unclear which one receives events, and a working hotkey matters
-// more than a tidy implementation. Everything is logged to
-// ~/.config/kokoro/hotkey.log so this is settled with data, not guesswork.
-const HK_SNIP: &str = "Control+Alt+D";
-const HK_READ_ALT: &str = "Control+Alt+R";
-const HK_DICTATE_ALT: &str = "Control+Alt+W";
 // Read and dictate are MODIFIER-ONLY CHORDS, which the global-shortcut plugin
 // cannot express. See chords.rs: they are watched with a passive event tap,
 // matching the bindings this setup already had muscle memory for.
-const CHORD_READ: [&str; 2] = ["ctrl", "cmd"];
-const CHORD_DICTATE: [&str; 2] = ["shift", "cmd"];
-
-/// Chord bindings, from prefs, defaulting to the bindings the previous host used.
-fn chord_config_from_prefs() -> chords::ChordConfig {
-    let p = load_prefs();
-    let get = |k: &str, fallback: &[&str]| -> Vec<String> {
-        p.get(k)
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>())
-            .filter(|v: &Vec<String>| !v.is_empty())
-            .unwrap_or_else(|| fallback.iter().map(|s| s.to_string()).collect())
-    };
-    chords::ChordConfig {
-        tap: get("chord_read", &CHORD_READ),
-        hold: get("chord_dictate", &CHORD_DICTATE),
-    }
-}
-
-fn pretty_chord(mods: &[String]) -> String {
-    let glyph = |m: &str| match m {
-        "ctrl" => "⌃",
-        "alt" => "⌥",
-        "shift" => "⇧",
-        "cmd" => "⌘",
-        _ => "?",
-    };
-    // Fixed order so the same chord always renders identically.
-    ["ctrl", "alt", "shift", "cmd"]
-        .iter()
-        .filter(|o| mods.iter().any(|m| m == *o))
-        .map(|o| glyph(o))
-        .collect()
-}
 
 /// Begin capturing. The next chord pressed and released is recorded rather
 /// than acted on — the only reliable way to bind a key when a KVM may be
 /// rewriting modifiers in transit.
-#[tauri::command]
-fn record_chord(slot: String) {
-    chords::start_recording(&slot);
-}
-
-/// Poll for a completed capture; saves it and re-applies the binding live.
-#[tauri::command]
-fn poll_recorded() -> Option<serde_json::Value> {
-    let (slot, mods) = chords::take_recorded()?;
-    let key = match slot.as_str() {
-        "read" => "chord_read",
-        "dictate" => "chord_dictate",
-        _ => return None,
-    };
-    let mut p = load_prefs();
-    p[key] = serde_json::json!(mods);
-    let _ = std::fs::write(prefs_file(), serde_json::to_string_pretty(&p).unwrap_or_default());
-    chords::set_config(chord_config_from_prefs());
-    Some(serde_json::json!({ "slot": slot, "label": pretty_chord(&mods) }))
-}
-
 #[tauri::command]
 fn hotkeys() -> serde_json::Value {
     serde_json::json!({
@@ -828,31 +762,97 @@ fn hotkeys() -> serde_json::Value {
     })
 }
 
-fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
-    // Modifier chords first — these are the ones with muscle memory behind them.
-    chords::set_config(chord_config_from_prefs());
-    let a1 = app.clone();
-    let a2 = app.clone();
-    let a3 = app.clone();
-    chords::watch(
-        move || read_selection(a1.clone()),
-        move || dictation_start(&a2),
-        move || dictation_stop(&a3),
-    )?;
-
-    let snip: Shortcut = HK_SNIP.parse().map_err(|_| "bad snip shortcut")?;
-    app.global_shortcut()
-        .on_shortcuts([snip], move |app, sc, event| {
-            // Read and snip fire once on press. Dictation is PUSH TO TALK:
-            // record while held, transcribe on release. Toggle semantics were
-            // rejected because a start with no matching stop leaves the
-            // microphone recording invisibly.
-            if event.state == ShortcutState::Pressed && sc == &snip {
-                snip_and_read(app.clone());
-            }
-        })
-        .map_err(|e| format!("could not register hotkeys: {e}"))
+/// Hotkeys, all plain accelerators.
+///
+/// This is the mechanism that was CONFIRMED WORKING on this machine (commit
+/// 1ad2183). Modifier-only chords replaced it, were never verified here, and
+/// broke input for several rounds. They are gone. Anything the user wants
+/// instead is set with the recorder below, which captures a real key press —
+/// so the binding is whatever actually arrives, KVM translation included.
+fn hotkey_prefs() -> (String, String, String) {
+    let p = load_prefs();
+    let get = |k: &str, d: &str| {
+        p.get(k)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .unwrap_or(d)
+            .to_string()
+    };
+    (
+        get("hk_read", "Control+Alt+Command+R"),
+        get("hk_dictate", "Control+Alt+Command+W"),
+        get("hk_snip", "Control+Alt+KeyD"),
+    )
 }
+
+fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+
+    let (r, d, n) = hotkey_prefs();
+    let parse = |a: &str, what: &str| -> Result<Shortcut, String> {
+        a.parse::<Shortcut>()
+            .map_err(|_| format!("{what} shortcut is not valid: {a}"))
+    };
+    let read = parse(&r, "read")?;
+    let dictate = parse(&d, "dictate")?;
+    let snip = parse(&n, "snip")?;
+
+    gs.on_shortcuts([read, dictate, snip], move |app, sc, event| match event.state {
+        ShortcutState::Pressed => {
+            if sc == &read {
+                read_selection(app.clone());
+            } else if sc == &snip {
+                snip_and_read(app.clone());
+            } else if sc == &dictate {
+                dictation_start(app); // push to talk
+            }
+        }
+        ShortcutState::Released => {
+            if sc == &dictate {
+                dictation_stop(app);
+            }
+        }
+    })
+    .map_err(|e| format!("could not register hotkeys: {e}"))
+}
+
+/// Save a recorded accelerator and re-register immediately.
+#[tauri::command]
+fn set_hotkey(app: AppHandle, slot: String, accelerator: String) -> Result<String, String> {
+    let key = match slot.as_str() {
+        "read" => "hk_read",
+        "dictate" => "hk_dictate",
+        "snip" => "hk_snip",
+        _ => return Err("unknown slot".into()),
+    };
+    // Validate BEFORE saving: a bad accelerator saved to prefs would leave the
+    // app with no working hotkeys at every future launch.
+    accelerator
+        .parse::<Shortcut>()
+        .map_err(|_| format!("that combination cannot be used: {accelerator}"))?;
+
+    let mut p = load_prefs();
+    let previous = p.get(key).and_then(|v| v.as_str()).map(String::from);
+    p[key] = serde_json::json!(accelerator);
+    let _ = std::fs::write(prefs_file(), serde_json::to_string_pretty(&p).unwrap_or_default());
+
+    if let Err(e) = register_hotkeys(&app) {
+        // Roll back rather than leave every hotkey dead.
+        let mut p = load_prefs();
+        match previous {
+            Some(prev) => p[key] = serde_json::json!(prev),
+            None => {
+                p.as_object_mut().map(|o| o.remove(key));
+            }
+        }
+        let _ = std::fs::write(prefs_file(), serde_json::to_string_pretty(&p).unwrap_or_default());
+        let _ = register_hotkeys(&app);
+        return Err(e);
+    }
+    Ok(accelerator)
+}
+
 
 // ── signals ──────────────────────────────────────────────────────────────────
 
@@ -913,8 +913,7 @@ pub fn run() {
             get_prefs,
             set_prefs,
             list_voices,
-            record_chord,
-            poll_recorded,
+            set_hotkey,
             hotkeys
         ])
         .setup(|app| {
@@ -935,9 +934,9 @@ pub fn run() {
                 eprintln!("{e}");
             }
 
-            let read = MenuItem::with_id(app, "read", "Read selection", true, Some(HK_READ_ALT))?;
-            let snip = MenuItem::with_id(app, "snip", "Snip & read", true, Some(HK_SNIP))?;
-            let dict = MenuItem::with_id(app, "dict", "Dictate  (hold ⌃⌥W)", true, None::<&str>)?;
+            let read = MenuItem::with_id(app, "read", "Read selection", true, None::<&str>)?;
+            let snip = MenuItem::with_id(app, "snip", "Snip & read", true, None::<&str>)?;
+            let dict = MenuItem::with_id(app, "dict", "Dictate  (hold)", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "Settings…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Kokoro Voice", true, None::<&str>)?;
