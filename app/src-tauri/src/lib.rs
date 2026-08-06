@@ -749,9 +749,14 @@ fn dictation_stop(app: &AppHandle) {
 //
 // Working beats familiar. chords.rs is kept for machines without a KVM in the
 // path, but it is not what we depend on.
-const HK_READ: &str = "Control+Alt+R";
-const HK_DICTATE: &str = "Control+Alt+W";
+// The keys actually asked for. BOTH mechanisms run at once — the chord tap for
+// ⌃⌘ / ⇧⌘, and accelerators as a parallel path — because on this machine the
+// KVM makes it unclear which one receives events, and a working hotkey matters
+// more than a tidy implementation. Everything is logged to
+// ~/.config/kokoro/hotkey.log so this is settled with data, not guesswork.
 const HK_SNIP: &str = "Control+Alt+D";
+const HK_READ_ALT: &str = "Control+Alt+R";
+const HK_DICTATE_ALT: &str = "Control+Alt+W";
 // Read and dictate are MODIFIER-ONLY CHORDS, which the global-shortcut plugin
 // cannot express. See chords.rs: they are watched with a passive event tap,
 // matching the bindings this setup already had muscle memory for.
@@ -817,9 +822,9 @@ fn poll_recorded() -> Option<serde_json::Value> {
 #[tauri::command]
 fn hotkeys() -> serde_json::Value {
     serde_json::json!({
-        "read": "⌃⌥R",
+        "read": "⌃⌘ tap  ·  or ⌃⌥R",
         "snip": "⌃⌥D",
-        "dictate": "⌃⌥W (hold)"
+        "dictate": "⇧⌘ hold  ·  or ⌃⌥W"
     })
 }
 
@@ -930,7 +935,7 @@ pub fn run() {
                 eprintln!("{e}");
             }
 
-            let read = MenuItem::with_id(app, "read", "Read selection", true, Some(HK_READ))?;
+            let read = MenuItem::with_id(app, "read", "Read selection", true, Some(HK_READ_ALT))?;
             let snip = MenuItem::with_id(app, "snip", "Snip & read", true, Some(HK_SNIP))?;
             let dict = MenuItem::with_id(app, "dict", "Dictate  (hold ⌃⌥W)", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;

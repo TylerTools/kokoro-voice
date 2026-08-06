@@ -101,6 +101,18 @@ pub fn take_recorded() -> Option<(String, Vec<String>)> {
 
 /// Temporarily ignore chords — used while we synthesize keystrokes ourselves,
 /// so typing a transcript cannot retrigger the thing that produced it.
+/// Append a line to the hotkey diagnostic log.
+pub fn dbg(line: &str) {
+    use std::io::Write;
+    let path = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default()
+        .join(".config/kokoro/hotkey.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 pub fn suppress(on: bool) {
     SUPPRESSED.store(on, Ordering::SeqCst);
 }
@@ -147,16 +159,23 @@ where
 
             match etype {
                 CGEventType::KeyDown => {
-                    // A real keypress only means "ordinary shortcut" if
-                    // modifiers are actually down. Blocking on every keystroke
-                    // left the flag stuck true through normal typing.
-                    if st.mods_down {
+                    // Modifier keys can arrive as KeyDown as well as
+                    // FlagsChanged, especially through a KVM that re-synthesises
+                    // input. Counting those as "an ordinary shortcut" cancels the
+                    // very gesture the user is making, so ignore them by keycode.
+                    let code = event.get_integer_value_field(
+                        core_graphics::event::EventField::KEYBOARD_EVENT_KEYCODE,
+                    );
+                    let is_modifier = matches!(code, 54..=63);
+                    if st.mods_down && !is_modifier {
+                        dbg(&format!("TAP keydown code={code} -> blocked"));
                         st.blocked = true;
                         st.tap_armed = false;
                     }
                 }
                 CGEventType::FlagsChanged => {
                     let mods = active_mods(event);
+                    dbg(&format!("TAP flags=[{}]", mods.join("+")));
                     st.mods_down = !mods.is_empty();
                     if mods.len() > st.peak.len() {
                         st.peak = mods.iter().map(|m| m.to_string()).collect();
@@ -201,11 +220,20 @@ where
                             st.holding = false;
                             on_hold_end();
                         }
+                        dbg(&format!(
+                            "TAP release armed={} blocked={} held={}ms",
+                            st.tap_armed,
+                            st.blocked,
+                            st.tap_at.elapsed().as_millis()
+                        ));
+                        // Was 1200ms. Too tight: holding the chord for a beat
+                        // before releasing is natural and silently did nothing.
                         if st.tap_armed
                             && !st.blocked
-                            && st.tap_at.elapsed() < std::time::Duration::from_millis(1200)
+                            && st.tap_at.elapsed() < std::time::Duration::from_millis(4000)
                         {
                             st.tap_armed = false;
+                            dbg("TAP -> read fired");
                             on_tap();
                         }
                         st.tap_armed = false;
@@ -218,6 +246,7 @@ where
                         if same(&want_hold) {
                             if !st.holding && !st.blocked {
                                 st.holding = true;
+                                dbg("TAP -> dictate start");
                                 on_hold_start();
                             }
                         } else if st.holding {
