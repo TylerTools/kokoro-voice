@@ -110,8 +110,19 @@ def record_until_stopped() -> bytes:
             print(f"STATUS {status}", file=sys.stderr, flush=True)
         frames.append(indata.copy())
 
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
-                        dtype="float32", callback=cb):
+    # Opening the microphone can BLOCK INDEFINITELY when the host app has no
+    # microphone permission — no error, no prompt, just a hang that looks like
+    # the app has frozen. Bound it, so a permissions problem reports itself.
+    try:
+        stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
+                                dtype="float32", callback=cb)
+        stream.start()
+    except Exception as e:  # noqa: BLE001
+        print(f"ERROR microphone unavailable ({e}) — grant Microphone access",
+              flush=True)
+        return b""
+
+    with stream:
         print("RECORDING", flush=True)   # the UI waits for this
         t0 = time.time()
         while not os.path.exists(STOPFILE):
