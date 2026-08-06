@@ -739,7 +739,18 @@ fn dictation_stop(app: &AppHandle) {
 
 // ── hotkeys ──────────────────────────────────────────────────────────────────
 
-// Snip is a plain accelerator — a real key survives the KVM fine.
+// ALL THREE are plain accelerators.
+//
+// Modifier-only chords (⌃⌘ tap / ⇧⌘ hold) are implemented in chords.rs via a
+// CGEventTap, and did not fire on this machine. The accelerators below DID —
+// tested and confirmed working — and the difference is the mechanism: a
+// software KVM injects synthetic events, and a Session-level tap does not
+// reliably observe them, whereas the accelerator path (Carbon hotkeys) does.
+//
+// Working beats familiar. chords.rs is kept for machines without a KVM in the
+// path, but it is not what we depend on.
+const HK_READ: &str = "Control+Alt+R";
+const HK_DICTATE: &str = "Control+Alt+W";
 const HK_SNIP: &str = "Control+Alt+D";
 // Read and dictate are MODIFIER-ONLY CHORDS, which the global-shortcut plugin
 // cannot express. See chords.rs: they are watched with a passive event tap,
@@ -805,11 +816,10 @@ fn poll_recorded() -> Option<serde_json::Value> {
 
 #[tauri::command]
 fn hotkeys() -> serde_json::Value {
-    let c = chord_config_from_prefs();
     serde_json::json!({
-        "read": format!("{} (tap)", pretty_chord(&c.tap)),
+        "read": "⌃⌥R",
         "snip": "⌃⌥D",
-        "dictate": format!("{} (hold)", pretty_chord(&c.hold))
+        "dictate": "⌃⌥W (hold)"
     })
 }
 
@@ -920,9 +930,9 @@ pub fn run() {
                 eprintln!("{e}");
             }
 
-            let read = MenuItem::with_id(app, "read", "Read selection  (⌃⌘ tap)", true, None::<&str>)?;
+            let read = MenuItem::with_id(app, "read", "Read selection", true, Some(HK_READ))?;
             let snip = MenuItem::with_id(app, "snip", "Snip & read", true, Some(HK_SNIP))?;
-            let dict = MenuItem::with_id(app, "dict", "Dictate  (⇧⌘ hold)", true, None::<&str>)?;
+            let dict = MenuItem::with_id(app, "dict", "Dictate  (hold ⌃⌥W)", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "Settings…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Kokoro Voice", true, None::<&str>)?;
