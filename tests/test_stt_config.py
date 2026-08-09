@@ -2,6 +2,7 @@ import unittest
 
 from stt_config import candidates, load_cpu_compute
 import json
+from pathlib import Path
 import tempfile
 
 
@@ -25,10 +26,12 @@ class SttSelectionTests(unittest.TestCase):
             candidates("Windows", "magic")
 
     def test_persisted_cpu_choice_is_validated(self):
-        with tempfile.NamedTemporaryFile("w+", suffix=".json") as handle:
-            json.dump({"cpu_compute": "float32"}, handle)
-            handle.flush()
-            self.assertEqual(load_cpu_compute(handle.name), "float32")
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / "stt-backend.json"
+            profile.write_text(
+                json.dumps({"cpu_compute": "float32"}), encoding="utf-8"
+            )
+            self.assertEqual(load_cpu_compute(str(profile)), "float32")
 
 
 if __name__ == "__main__":
