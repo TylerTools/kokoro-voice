@@ -88,6 +88,39 @@ document.getElementById("open-privacy")?.addEventListener("click", () => {
   openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy");
 });
 
+document.getElementById("export-diagnostics")?.addEventListener("click", async () => {
+  const path = await invoke<string>("export_diagnostics");
+  detail.textContent = `Diagnostics saved to ${path}`;
+});
+
+document.getElementById("run-system-check")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget as HTMLButtonElement;
+  button.disabled = true;
+  detail.textContent = "Checking engine, permissions, hotkeys, and microphone…";
+  try {
+    const report = await invoke<Record<string, unknown>>("system_check");
+    const permissions = report.permissions as Record<string, string>;
+    const engine = report.engine as Record<string, string>;
+    detail.textContent = engine.status === "ok" && permissions.accessibility === "available"
+      ? "System check passed."
+      : "System check found an issue. Export diagnostics for details.";
+  } finally {
+    button.disabled = false;
+  }
+});
+
+invoke<{ engine_bytes: number }>("storage_status").then((storage) => {
+  const el = document.getElementById("storage-detail");
+  if (el) el.textContent = `${(storage.engine_bytes / 1_000_000_000).toFixed(2)} GB of downloaded local data`;
+});
+
+document.getElementById("remove-local-data")?.addEventListener("click", async () => {
+  if (!window.confirm("Remove the downloaded runtime and models from this computer?")) return;
+  const removePreferences = (document.getElementById("remove-preferences") as HTMLInputElement).checked;
+  await invoke("remove_local_data", { removePreferences });
+  window.location.reload();
+});
+
 // Live setup progress from Rust.
 listen<{ pct: number; message: string }>("setup-progress", (e) => {
   const wrap = document.getElementById("bar-wrap") as HTMLElement;
@@ -102,6 +135,8 @@ document.getElementById("setup-go")?.addEventListener("click", async (ev) => {
   const btn = ev.currentTarget as HTMLButtonElement;
   const msg = document.getElementById("setup-msg") as HTMLElement;
   btn.disabled = true;
+  const cancel = document.getElementById("setup-cancel") as HTMLButtonElement;
+  cancel.hidden = false;
   btn.textContent = "Installing…";
   try {
     await invoke("setup_engine");
@@ -110,14 +145,25 @@ document.getElementById("setup-go")?.addEventListener("click", async (ev) => {
     // Setup is resumable, so say so rather than leaving a dead end.
     msg.textContent = `${e} — press Retry to pick up where it stopped.`;
     btn.disabled = false;
+    cancel.hidden = true;
     btn.textContent = "Retry";
     return;
   }
+  cancel.hidden = true;
   setTimeout(refresh, 1500);
 });
 
+document.getElementById("setup-cancel")?.addEventListener("click", async (ev) => {
+  (ev.currentTarget as HTMLButtonElement).disabled = true;
+  await invoke("cancel_setup");
+});
+
 // Show the real hotkeys rather than hardcoding them in the markup.
-invoke<Record<string, string>>("hotkeys").then((hk) => {
+type HotkeyResponse = Record<"read" | "dictate" | "snip", string> & {
+  bindings: Record<string, { label: string; registered: boolean; configurable: boolean }>;
+};
+
+invoke<HotkeyResponse>("hotkeys").then((hk) => {
   const set = (id: string, v: string) => {
     const el = document.getElementById(id);
     if (el) el.textContent = pretty(v);
@@ -125,13 +171,96 @@ invoke<Record<string, string>>("hotkeys").then((hk) => {
   set("key-read", hk.read);
   set("key-dictate", hk.dictate);
   set("key-snip", hk.snip);
+  document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) => {
+    const binding = hk.bindings?.[btn.dataset.rec ?? ""];
+    btn.hidden = binding ? !binding.configurable : false;
+  });
+  if (Object.values(hk.bindings).some((binding) => !binding.registered)) {
+    detail.textContent = "Hotkeys are not registered. Check Accessibility permission or shortcut conflicts.";
+  }
+});
+
+let testingDictation = false;
+listen<{ session: string; state: string }>("dictation-state", (e) => {
+  if (e.payload.state === "starting") {
+    testingDictation = document.activeElement?.id === "dictation-test";
+  }
+  const messages: Record<string, string> = {
+    starting: "Opening microphone…",
+    recording: "Listening…",
+    transcribing: "Transcribing locally…",
+    completed: "Dictation inserted and copied to the clipboard.",
+    cancelled: "Dictation cancelled.",
+    "permission-denied": "Microphone permission denied. Open Privacy & Security.",
+    "device-unavailable": "The selected microphone is unavailable.",
+    "timed-out": "The microphone did not open in time.",
+  };
+  detail.textContent = messages[e.payload.state] ?? e.payload.state;
+});
+
+listen<string>("dictated", async () => {
+  const test = document.getElementById("dictation-test") as HTMLTextAreaElement;
+  if (!testingDictation || !test || !test.value.trim()) return;
+  testingDictation = false;
+  const status = document.getElementById("dictation-test-status") as HTMLElement;
+  await invoke("record_capability", { capability: "dictation-insertion", passed: true });
+  await invoke("set_prefs", { livePreview: true });
+  const toggle = document.getElementById("live-preview") as HTMLInputElement;
+  if (toggle) toggle.checked = true;
+  status.textContent = "Dictation passed. Live typing is enabled.";
 });
 
 // ── voice & speed ───────────────────────────────────────────────────────────
 const SPEEDS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 
 async function initPrefs() {
-  const prefs = await invoke<{ voice: string; speed: number }>("get_prefs");
+  const prefs = await invoke<{ voice: string; speed: number; cue_enabled?: boolean; cue_volume?: number; live_preview?: boolean }>("get_prefs");
+
+  const cueEnabled = document.getElementById("cue-enabled") as HTMLInputElement;
+  const cueVolume = document.getElementById("cue-volume") as HTMLInputElement;
+  const cueVolumeLabel = document.getElementById("cue-volume-label") as HTMLOutputElement;
+  cueEnabled.checked = prefs.cue_enabled !== false;
+  cueVolume.value = String(Math.round((prefs.cue_volume ?? 0.22) * 100));
+  cueVolumeLabel.value = `${cueVolume.value}%`;
+  cueEnabled.onchange = () => {
+    void invoke("set_prefs", { cueEnabled: cueEnabled.checked });
+  };
+  cueVolume.oninput = () => {
+    cueVolumeLabel.value = `${cueVolume.value}%`;
+  };
+  cueVolume.onchange = () => {
+    void invoke("set_prefs", { cueVolume: Number(cueVolume.value) / 100 });
+  };
+  const livePreview = document.getElementById("live-preview") as HTMLInputElement;
+  livePreview.checked = prefs.live_preview !== false;
+  livePreview.onchange = () => {
+    void invoke("set_prefs", { livePreview: livePreview.checked });
+  };
+  const launchAtLogin = document.getElementById("launch-at-login") as HTMLInputElement;
+  launchAtLogin.checked = await invoke<boolean>("launch_at_login_status");
+  launchAtLogin.onchange = async () => {
+    launchAtLogin.checked = await invoke<boolean>("set_launch_at_login", {
+      enabled: launchAtLogin.checked,
+    });
+  };
+
+  const microphones = await invoke<Array<{ id: number; name: string; default: boolean }>>("microphone_devices");
+  const mic = document.getElementById("microphone") as HTMLSelectElement;
+  mic.innerHTML = '<option value="">System default</option>';
+  const savedMicrophone = String((prefs as Record<string, unknown>).microphone_device ?? "");
+  for (const device of microphones) {
+    const option = document.createElement("option");
+    option.value = device.name;
+    option.textContent = device.name + (device.default ? " (default)" : "");
+    option.selected = savedMicrophone === option.value;
+    mic.appendChild(option);
+  }
+  if (savedMicrophone && !microphones.some((device) => device.name === savedMicrophone)) {
+    mic.value = "";
+    await invoke("set_microphone", { device: null });
+    detail.textContent = "Saved microphone is unavailable; using the system default.";
+  }
+  mic.onchange = () => { void invoke("set_microphone", { device: mic.value || null }); };
 
   // Voices come from the engine, so this only populates once it is up. Retry
   // rather than leaving an empty dropdown if setup is still running.
@@ -196,36 +325,105 @@ function accelFrom(e: KeyboardEvent): string | null {
   return [...mods, code].join("+");
 }
 
+let hotkeyRecorderActive = false;
 document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) => {
-  btn.addEventListener("click", () => {
+  btn.addEventListener("click", async () => {
+    if (hotkeyRecorderActive) return;
+    hotkeyRecorderActive = true;
     const slot = btn.dataset.rec!;
     const original = btn.textContent;
+    const recorderButtons = document.querySelectorAll<HTMLButtonElement>("button[data-rec]");
+    recorderButtons.forEach((button) => { button.disabled = true; });
+    try {
+      await invoke("begin_hotkey_recording");
+    } catch (err) {
+      hotkeyRecorderActive = false;
+      recorderButtons.forEach((button) => { button.disabled = false; });
+      detail.textContent = String(err);
+      return;
+    }
+    recorderButtons.forEach((button) => { button.disabled = button !== btn; });
     btn.textContent = "Press keys…";
     btn.classList.add("recording");
+    const pressedModifiers = new Set<string>();
+    let finished = false;
+    let recorderTimeout: number | undefined;
 
-    const finish = () => {
+    const finish = async () => {
+      if (finished) return;
+      finished = true;
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+      if (recorderTimeout !== undefined) window.clearTimeout(recorderTimeout);
       btn.textContent = original;
       btn.classList.remove("recording");
+      hotkeyRecorderActive = false;
+      recorderButtons.forEach((button) => { button.disabled = false; });
+      try {
+        await invoke("end_hotkey_recording");
+      } catch (err) {
+        detail.textContent = String(err);
+      }
+    };
+
+    const modifierName = (e: KeyboardEvent): string | null => {
+      // Deskflow can rewrite `key` (on this Mac, physical Shift arrives as
+      // CapsLock) while preserving the hardware-oriented `code`. Prefer code,
+      // and accept Deskflow's CapsLock translation only inside this recorder.
+      if (/^Control/.test(e.code) || e.key === "Control") return "Control";
+      if (/^Alt/.test(e.code) || e.key === "Alt") return "Alt";
+      if (/^Shift/.test(e.code) || e.code === "CapsLock" || e.key === "Shift") return "Shift";
+      if (/^Meta/.test(e.code) || e.key === "Meta") return "Command";
+      return null;
     };
 
     const onKey = async (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.code === "Escape") { finish(); return; }
+      if (e.code === "Escape") { await finish(); return; }
+      const modifier = modifierName(e);
+      if (modifier) {
+        pressedModifiers.add(modifier);
+        return;
+      }
       const accel = accelFrom(e);
       if (!accel) return;   // still waiting for a full combination
-      finish();
       try {
         await invoke("set_hotkey", { slot, accelerator: accel });
         const kbd = document.getElementById(`key-${slot}`);
         if (kbd) kbd.textContent = pretty(accel);
+        detail.textContent = `${pretty(accel)} saved for ${slot}.`;
       } catch (err) {
         const kbd = document.getElementById(`key-${slot}`);
         if (kbd) kbd.textContent = String(err);
       }
+      await finish();
+    };
+
+    const onKeyUp = async (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!modifierName(e) || pressedModifiers.size < 2) return;
+      const order = ["Control", "Alt", "Shift", "Command"];
+      const accel = order.filter((modifier) => pressedModifiers.has(modifier)).join("+");
+      try {
+        await invoke("set_hotkey", { slot, accelerator: accel });
+        const kbd = document.getElementById(`key-${slot}`);
+        if (kbd) kbd.textContent = pretty(accel);
+        detail.textContent = `${pretty(accel)} saved for ${slot}.`;
+      } catch (err) {
+        const kbd = document.getElementById(`key-${slot}`);
+        if (kbd) kbd.textContent = String(err);
+        detail.textContent = String(err);
+      }
+      await finish();
     };
     window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    // Avoid leaving shortcuts suspended forever if the recorder is abandoned,
+    // but do not cancel on window blur: macOS/Deskflow can briefly report a
+    // blur while a modifier chord is being delivered.
+    recorderTimeout = window.setTimeout(() => { void finish(); }, 15_000);
   });
 });
 

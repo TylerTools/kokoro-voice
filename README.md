@@ -42,25 +42,21 @@ tiny, and both platforms share one HTTP contract.
 
 ## Requirements
 
-- Python 3.12+ (the installer fetches it via [uv](https://docs.astral.sh/uv/) if missing)
 - macOS on Apple silicon, or Windows — see [Platform support](#platform-support)
-- ~1.3 GB disk: ~500 MB models, ~750 MB environment
+- Up to ~3 GB disk for the private runtime and pinned local models
 
 ## Install
 
-```sh
-git clone https://github.com/TylerTools/kokoro-voice
-cd kokoro-voice
-./install.sh          # macOS / Linux
-```
+Download the signed macOS DMG or Windows installer from the latest GitHub
+release. The desktop app installs its private runtime, hash-locked Python
+dependencies, and verified models on first launch; no system Python is required.
 
 ```powershell
 .\install.ps1         # Windows
 ```
 
-The installer creates the environment, downloads the models, generates an auth
-token, installs the service to start at login, and verifies it end to end. It is
-idempotent — safe to re-run.
+`install.ps1` is a signed-release bootstrap for Windows. It refuses installers
+whose Authenticode signature is not valid.
 
 Then check it:
 
@@ -75,15 +71,20 @@ curl localhost:8123/health
 *new* selection to switch to it; press with nothing newly selected to pause.
 
 **Dictate** — hold the dictation key, speak, release. The text is typed into
-whatever has focus, and also placed on the clipboard as a fallback (restored
-after 45 seconds so transcripts don't linger).
+whatever has focus, and also placed on the clipboard as a fallback.
+
+Live editing is target-locked on macOS: before every revision the app verifies
+the original accessible control, caret, and text it owns. Focus changes, manual
+edits, unsupported controls, and failed verification permanently switch that
+session to clipboard fallback. Secure fields are rejected before recording.
+Windows uses clipboard-only dictation until its UI Automation range adapter has
+passed the same ownership tests.
 
 **Snip and read** — press the snip key, drag a box around anything on screen,
 and it is OCR'd and read aloud. This is for text you *cannot* select: images,
 PDFs in a viewer, video frames, remote desktops, screenshots someone sent you.
-OCR uses Apple's Vision framework, which ships with the OS — nothing is
-downloaded and nothing leaves the machine. The capture is deleted as soon as the
-text is extracted.
+OCR uses Apple Vision on macOS and Windows.Media.Ocr on Windows — nothing is
+uploaded. The capture is deleted as soon as the text is extracted.
 
 Requires the **Screen Recording** permission for whichever app triggers it.
 Without it `screencapture` fails with "could not create image from display".
@@ -205,7 +206,7 @@ playing must reach the producer too.
 | | Status |
 |---|---|
 | **macOS** (Apple silicon) | Complete — service, hotkeys, mini player, dictation, snip OCR |
-| **Windows** | Service and clients port directly; host integration in progress. OCR maps to the built-in `Windows.Media.Ocr`, also on-device. See [PORTING-WINDOWS.md](PORTING-WINDOWS.md) |
+| **Windows x64** | Desktop host, registered hotkeys, CPU/NVIDIA STT fallback, dictation, and Windows.Media.Ocr implementation; release requires the Windows CI and physical checklist to pass |
 | **Linux** | Clients work; no host integration |
 
 The service and both clients are portable. What is platform-specific is the
@@ -218,3 +219,6 @@ MIT — see [LICENSE](LICENSE).
 
 Kokoro and Whisper carry their own licenses. Model weights are downloaded from
 their upstream sources at install time and are not redistributed here.
+
+See [Privacy](PRIVACY.md), [Security](SECURITY.md), and
+[Third-party notices](THIRD_PARTY_NOTICES.md) for public-release details.
