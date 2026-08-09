@@ -48,8 +48,8 @@ tiny, and both platforms share one HTTP contract.
 ## Install
 
 Download the signed macOS DMG or Windows installer from the latest GitHub
-release. The desktop app installs its private runtime and verified models on
-first launch; no system Python is required.
+release. The desktop app installs its private runtime, hash-locked Python
+dependencies, and verified models on first launch; no system Python is required.
 
 ```powershell
 .\install.ps1         # Windows
@@ -219,3 +219,6 @@ MIT — see [LICENSE](LICENSE).
 
 Kokoro and Whisper carry their own licenses. Model weights are downloaded from
 their upstream sources at install time and are not redistributed here.
+
+See [Privacy](PRIVACY.md), [Security](SECURITY.md), and
+[Third-party notices](THIRD_PARTY_NOTICES.md) for public-release details.

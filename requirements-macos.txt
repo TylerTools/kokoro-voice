@@ -1,16 +1,16 @@
 # Apple silicon: MLX runs Whisper on the GPU.
 # Measured 0.86s for 6.85s of audio (7.9x realtime) vs 2.48s for
 # faster-whisper float32 on CPU — large-model accuracy at small-model latency.
-mlx-whisper
+mlx-whisper==0.4.3
 
 # REQUIRED PIN. mlx-whisper declares `numba` with no lower bound, and the
 # resolver backtracks to numba 0.53.1 -> llvmlite 0.36.0, which refuses to
 # build on Python 3.12 ("only versions >=3.6,<3.10 are supported"). That makes
 # a from-scratch install fail for every new user. Verified working: 0.66.0.
-numba>=0.60
+numba==0.66.0
 
 # Screen-snip OCR via the Vision framework. Ships with macOS, so this is only
 # the Python binding — no model download, no network, ~2MB on disk.
 # Measured: 0.34s accurate / 0.17s fast on a 1000x340 text image.
-pyobjc-framework-Vision
-pyobjc-framework-Quartz
+pyobjc-framework-Vision==12.2.1
+pyobjc-framework-Quartz==12.2.1

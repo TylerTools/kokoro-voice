@@ -67,6 +67,8 @@
       "../../requirements.txt": "engine-src/requirements.txt",
       "../../requirements-macos.txt": "engine-src/requirements-macos.txt",
       "../../requirements-windows.txt": "engine-src/requirements-windows.txt",
+      "../../requirements-macos.lock": "engine-src/requirements-macos.lock",
+      "../../requirements-windows.lock": "engine-src/requirements-windows.lock",
       "../../client/*.py": "engine-src/client/"
     }
   }

@@ -3,6 +3,8 @@
 A draft release must not be published until every item is recorded as passed.
 
 - [ ] CI passes on macOS ARM64 and Windows x64.
+- [ ] CI logs prove `arm64` on macOS and `x86_64` on Windows; both hash-locked dependency manifests validate.
+- [ ] `main` protection, secret push protection, Dependabot security updates, and private vulnerability reporting are enabled.
 - [ ] macOS signature and notarization verified with `codesign` and `spctl`.
 - [ ] Windows Authenticode signature verified on the installer and installed executable.
 - [ ] Installer SHA-256 hashes recorded in the release.

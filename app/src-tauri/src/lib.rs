@@ -76,10 +76,25 @@ fn home() -> std::path::PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
+fn path_override(name: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+fn env_switch(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 /// Where the installed engine lives. Deliberately NOT inside the .app bundle:
 /// a bundle should be replaceable by dragging a new one over it, and writing
 /// inside it breaks the code signature.
 fn engine_root() -> std::path::PathBuf {
+    if let Some(path) = path_override("KOKORO_ENGINE_ROOT") {
+        return path;
+    }
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("Kokoro Voice")
@@ -87,6 +102,10 @@ fn engine_root() -> std::path::PathBuf {
 }
 
 fn config_dir() -> std::path::PathBuf {
+    if let Some(path) = path_override("KOKORO_CONFIG_DIR") {
+        let _ = std::fs::create_dir_all(&path);
+        return path;
+    }
     #[cfg(target_os = "macos")]
     let d = home().join(".config/kokoro");
     #[cfg(not(target_os = "macos"))]
@@ -450,11 +469,11 @@ fn download_verified(
     std::fs::rename(partial, destination).map_err(|e| e.to_string())
 }
 
-fn platform_requirements() -> &'static str {
+fn platform_lockfile() -> &'static str {
     if cfg!(target_os = "windows") {
-        "requirements-windows.txt"
+        "requirements-windows.lock"
     } else {
-        "requirements-macos.txt"
+        "requirements-macos.lock"
     }
 }
 
@@ -474,8 +493,7 @@ fn sync_engine_sources(app: &AppHandle, root: &std::path::Path) -> Result<(), St
         "server.py",
         "stt_config.py",
         "benchmark_stt.py",
-        "requirements.txt",
-        platform_requirements(),
+        platform_lockfile(),
     ] {
         let from = src.join(name);
         if from.exists() {
@@ -580,29 +598,24 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
     }
 
     emit_step(app, 30, "Installing components… (a minute or two)");
-    for req in ["requirements.txt", platform_requirements()] {
-        let f = root.join(req);
-        if !f.exists() {
-            continue;
-        }
-        let st = Command::new(&uv)
-            .args(["pip", "install", "-r"])
-            .arg(&f)
-            .env("VIRTUAL_ENV", root.join(".venv"))
-            .status()
-            .map_err(|e| format!("uv pip install: {e}"))?;
-        if !st.success() {
-            return Err(format!("could not install {req}"));
-        }
+    let lockfile = platform_lockfile();
+    let locked = root.join(lockfile);
+    if !locked.exists() {
+        return Err(format!("verified dependency lock missing: {lockfile}"));
     }
-    // mlx-whisper declares torch but only imports it in the weight-CONVERSION
-    // path, which we never take. Verified that torch never enters sys.modules
-    // during import or a real transcribe(). Dropping it saves ~480MB.
-    if cfg!(target_os = "macos") {
-        let _ = Command::new(&uv)
-            .args(["pip", "uninstall", "torch"])
-            .env("VIRTUAL_ENV", root.join(".venv"))
-            .status();
+    let st = Command::new(&uv)
+        // The lock contains every transitive dependency. `--no-deps` prevents
+        // uv from following mlx-whisper's conversion-only torch dependency,
+        // which is intentionally excluded and saves roughly 480 MB.
+        .args(["pip", "install", "--require-hashes", "--no-deps", "-r"])
+        .arg(&locked)
+        .env("VIRTUAL_ENV", root.join(".venv"))
+        .status()
+        .map_err(|e| format!("uv pip install: {e}"))?;
+    if !st.success() {
+        return Err(format!(
+            "could not install verified dependencies from {lockfile}"
+        ));
     }
 
     // 4. Models — not redistributed, fetched from upstream. Sizes are verified
@@ -2346,7 +2359,8 @@ pub fn run() {
             // Kokoro is an accessibility tool whose hotkeys must be available
             // immediately after login. Default autostart on and self-heal a
             // missing LaunchAgent unless the user explicitly disabled it.
-            let launch_at_login = launch_at_login_preference(&load_prefs());
+            let isolated_autostart = env_switch("KOKORO_DISABLE_AUTOSTART");
+            let launch_at_login = !isolated_autostart && launch_at_login_preference(&load_prefs());
             if launch_at_login {
                 if let Err(error) = app.autolaunch().enable() {
                     structured_log(
@@ -2372,8 +2386,15 @@ pub fn run() {
             }
             install_signal_handlers(handle.clone());
             start_watchdog(handle.clone());
-            if let Err(e) = register_hotkeys(&handle) {
-                eprintln!("{e}");
+            if !env_switch("KOKORO_DISABLE_HOTKEYS") {
+                if let Err(e) = register_hotkeys(&handle) {
+                    eprintln!("{e}");
+                }
+            } else {
+                structured_log(
+                    "hotkeys-disabled",
+                    serde_json::json!({ "code": "isolated-development" }),
+                );
             }
 
             let read = MenuItem::with_id(app, "read", "Read selection", true, None::<&str>)?;
