@@ -957,15 +957,18 @@ fn storage_status() -> serde_json::Value {
 
 #[tauri::command]
 fn permission_status() -> serde_json::Value {
-    if cfg!(target_os = "macos") {
-        #[cfg(target_os = "macos")]
+    #[cfg(target_os = "macos")]
+    {
         let accessibility = macos_accessibility_client::accessibility::application_is_trusted();
         serde_json::json!({
             "accessibility": if accessibility { "available" } else { "required" },
             "microphone": "checked-on-use",
             "screen_capture": "checked-on-use",
         })
-    } else {
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
         serde_json::json!({
             "accessibility": "not-required",
             "microphone": "checked-on-use",
@@ -1019,6 +1022,10 @@ fn retry_permission(capability: String) -> serde_json::Value {
             macos_accessibility_client::accessibility::application_is_trusted_with_prompt();
         return serde_json::json!({ "capability": capability, "available": available });
     }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = capability;
+
     permission_status()
 }
 
