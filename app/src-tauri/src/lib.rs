@@ -63,6 +63,7 @@ static SETUP_CANCELLED: AtomicBool = AtomicBool::new(false);
 static HOTKEYS_REGISTERED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static CHORDS_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(unix)]
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
 /// Set while we are intentionally shutting down, so the watchdog does not
 /// helpfully resurrect the engine we are trying to stop.
@@ -70,6 +71,7 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 
 // ── locations ────────────────────────────────────────────────────────────────
 
+#[cfg(target_os = "macos")]
 fn home() -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -669,7 +671,7 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
     }
     #[cfg(target_os = "windows")]
     {
-        emit_step(&app, 90, "Optimizing speech recognition for this PC…");
+        emit_step(app, 90, "Optimizing speech recognition for this PC…");
         let benchmark = Command::new(python_path(&root))
             .arg(root.join("benchmark_stt.py"))
             .arg("--output")
@@ -1397,6 +1399,7 @@ fn set_clipboard(text: &str) {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn set_clipboard(_text: &str) {}
 
+#[cfg(any(target_os = "macos", test))]
 fn edit_delta(old: &str, new: &str) -> (usize, String) {
     let old_chars: Vec<char> = old.chars().collect();
     let new_chars: Vec<char> = new.chars().collect();
@@ -1908,6 +1911,7 @@ fn dictation_stop(app: &AppHandle) {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn dictation_cancel(app: &AppHandle) {
     let id = app.try_state::<Dictation>().and_then(|d| {
         d.0.lock().ok().and_then(|mut session| {

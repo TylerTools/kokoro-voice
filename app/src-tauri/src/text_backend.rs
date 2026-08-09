@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Debug)]
 pub struct TargetSnapshot {
     pub target_id: String,
@@ -8,6 +9,10 @@ pub struct TargetSnapshot {
     pub start: usize,
     pub selected_len: usize,
 }
+
+#[cfg(not(any(target_os = "macos", test)))]
+#[derive(Clone, Debug)]
+pub struct TargetSnapshot;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -35,6 +40,7 @@ fn char_slice(text: &str, start: usize, len: usize) -> Option<String> {
     (start + len <= chars.len()).then(|| chars[start..start + len].iter().collect())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn expected_value(target: &TargetSnapshot, inserted: &str) -> String {
     let chars: Vec<char> = target.baseline.chars().collect();
     let mut out: String = chars[..target.start].iter().collect();
@@ -43,10 +49,12 @@ fn expected_value(target: &TargetSnapshot, inserted: &str) -> String {
     out
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn scope_compatible(original: Option<&str>, current: Option<&str>) -> bool {
     original.is_none_or(|expected| current == Some(expected))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn can_rebind_target(
     same_process: bool,
     same_scope: bool,
@@ -61,6 +69,7 @@ fn can_rebind_target(
 /// synthetic newline.  The description is placeholder text, not user text.
 /// Treating it as the baseline makes the first injected preview look like an
 /// unowned edit as soon as the placeholder disappears.
+#[cfg(any(target_os = "macos", test))]
 fn normalize_empty_placeholder(
     value: String,
     description: Option<&str>,
@@ -349,7 +358,7 @@ mod platform {
                     return Err(ApplyOutcome::SecureField);
                 }
             }
-            Err(ApplyOutcome::Unavailable)
+            Err(ApplyOutcome::ClipboardFallback("clipboard-only".into()))
         }
 
         fn apply_revision(
