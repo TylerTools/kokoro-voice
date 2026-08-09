@@ -257,7 +257,7 @@ def stop_playback() -> None:
         if pid == os.getpid():
             continue
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, signal.SIGTERM if IS_WIN else signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
 
@@ -282,6 +282,8 @@ def is_paused() -> bool:
     pid = _player_pid()
     if not pid:
         return False
+    if IS_WIN:
+        return False
     out = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
                          capture_output=True, text=True).stdout.strip()
     return out.startswith("T")
@@ -291,6 +293,8 @@ def pause_playback() -> bool:
     """SIGSTOP the player — a real pause; audio resumes exactly where it left off."""
     pid = _player_pid()
     if not pid:
+        return False
+    if IS_WIN:
         return False
     try:
         os.kill(pid, signal.SIGSTOP)
@@ -303,6 +307,8 @@ def resume_playback() -> bool:
     pid = _player_pid()
     if not pid:
         return False
+    if IS_WIN:
+        return False
     try:
         os.kill(pid, signal.SIGCONT)
         return True
@@ -314,20 +320,20 @@ def toggle_playback() -> str:
     if not _player_pid():
         return "idle"
     if is_paused():
-        resume_playback()
-        return "playing"
-    pause_playback()
-    return "paused"
+        return "playing" if resume_playback() else "paused"
+    return "paused" if pause_playback() else "playing"
 
 
 def _play_file(path: str) -> None:
-    if IS_MAC:
-        proc = subprocess.Popen(["afplay", path])
-    elif IS_WIN:
-        proc = subprocess.Popen([
-            "powershell", "-NoProfile", "-Command",
-            f"(New-Object Media.SoundPlayer '{path}').PlaySync()",
-        ])
+    if IS_MAC or IS_WIN:
+        # Keep playback in this long-running process; spawning PowerShell for
+        # every chunk (or afplay on macOS) creates audible dead air.
+        import sounddevice as sd
+        import soundfile as sf
+        samples, sample_rate = sf.read(path, dtype="float32")
+        _write_state(os.getpid())
+        sd.play(samples, sample_rate, blocking=True)
+        return
     else:
         proc = subprocess.Popen(["aplay", path])
     _write_state(proc.pid)
@@ -335,13 +341,10 @@ def _play_file(path: str) -> None:
 
 
 def notify(message: str) -> None:
-    sys.stderr.write(message + "\n")
-    if IS_MAC:
-        subprocess.run(
-            ["osascript", "-e",
-             f'display notification {json.dumps(message)} with title "Kokoro TTS"'],
-            capture_output=True,
-        )
+    # The desktop host renders this inside its own status pill. Avoid macOS
+    # notifications, which expose the Python/AppleScript implementation and
+    # visually detach the failure from the control that triggered it.
+    print(f"NOTICE {message}", flush=True)
 
 
 def emit_paths(text: str, voice: str | None, speed: float) -> int:
