@@ -984,10 +984,9 @@ fn storage_status() -> serde_json::Value {
 
 #[tauri::command]
 fn permission_status() -> serde_json::Value {
-    if cfg!(target_os = "macos") {
-        #[cfg(target_os = "macos")]
+    #[cfg(target_os = "macos")]
+    {
         let accessibility = macos_accessibility_client::accessibility::application_is_trusted();
-        #[cfg(target_os = "macos")]
         let input_monitoring = objc2_core_graphics::CGPreflightListenEventAccess();
         serde_json::json!({
             "accessibility": if accessibility { "available" } else { "required" },
@@ -995,7 +994,10 @@ fn permission_status() -> serde_json::Value {
             "microphone": "checked-on-use",
             "screen_capture": "checked-on-use",
         })
-    } else {
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
         serde_json::json!({
             "accessibility": "not-required",
             "input_monitoring": "not-required",
@@ -1053,6 +1055,10 @@ fn retry_permission(capability: String) -> serde_json::Value {
         let available = objc2_core_graphics::CGRequestListenEventAccess();
         return serde_json::json!({ "capability": capability, "available": available });
     }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = capability;
+
     permission_status()
 }
 
@@ -1064,6 +1070,10 @@ fn system_check(app: AppHandle) -> serde_json::Value {
     {
         let _ = register_hotkeys(&app);
     }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = &app;
+
     serde_json::json!({
         "engine": engine_status(),
         "permissions": permission_status(),
