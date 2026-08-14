@@ -5,10 +5,10 @@ Dictation client — record from the mic, transcribe locally, print the text.
 Runs in the service venv (needs sounddevice + soundfile), unlike speak.py which
 is deliberately stdlib-only.
 
-Recording stops when a session-specific stop-file appears. That is used instead of signals
-because the caller (Hammerspoon) terminates tasks with SIGTERM, and we need to
-keep running *after* the stop in order to transcribe — a signal would race with
-that work. The stop-file makes the handoff explicit.
+Recording stops when a session-specific stop-file appears. That is used instead
+of signals because the desktop host must keep this child alive *after* capture
+ends so it can transcribe; terminating the recorder would race with that work.
+The stop-file makes the ownership handoff explicit and session-safe.
 
     dictate.py --record --session ID  record until that session is stopped
     dictate.py --stop --session ID    stop only that recording session
@@ -27,10 +27,10 @@ import time
 import urllib.error
 import urllib.request
 
-HOST = os.environ.get("KOKORO_HOST", "127.0.0.1:8123")
+HOST = os.environ.get("KOKORO_HOST", "127.0.0.1:8125")
 TOKEN = os.environ.get("KOKORO_TOKEN")
 TOKEN_FILE = os.environ.get(
-    "KOKORO_TOKEN_FILE", os.path.expanduser("~/.config/kokoro/token")
+    "KOKORO_TOKEN_FILE", os.path.expanduser("~/.config/kokoro-voice-2-1/token")
 )
 
 SAMPLE_RATE = 16000          # whisper's native rate — no resampling needed
@@ -55,7 +55,7 @@ def _state_dir() -> str:
             who = str(os.getuid())
         except AttributeError:  # Windows
             who = os.environ.get("USERNAME", "user")
-        base = os.path.join(tempfile.gettempdir(), f"kokoro-{who}")
+        base = os.path.join(tempfile.gettempdir(), f"kokoro-voice-2-1-{who}")
 
     os.makedirs(base, mode=0o700, exist_ok=True)
     st = os.lstat(base)
@@ -324,12 +324,11 @@ def main() -> int:
         "preview_interval": PREVIEW_INTERVAL,
     }, separators=(",", ":")), flush=True)
 
-    # Single line so the caller can read it straight off stdout. Strip ALL
-    # control characters, not just \n: Hammerspoon replays this through
-    # hs.eventtap.keyStrokes into whatever app has focus, so a stray \r or \t
-    # would be typed as Return/Tab — submitting a form or a shell line rather
-    # than inserting text. Whisper is very unlikely to emit them; this costs
-    # nothing and removes the question.
+    # Single line so the desktop parser can treat stdout as one-record-per-line.
+    # Strip ALL control characters, not just \n: the host injects this text into
+    # the focused control, so a stray \r or \t could submit a form or shell line
+    # instead of inserting text. Whisper is unlikely to emit them; the boundary
+    # still enforces the invariant rather than relying on that assumption.
     clean = "".join(c if c.isprintable() else " " for c in text)
     print("TEXT " + " ".join(clean.split()), flush=True)
     return 0

@@ -41,20 +41,20 @@ import urllib.request
 # Loopback default, matching the service's 127.0.0.1 bind. When the Windows
 # client lands, point THAT client at the service machine via KOKORO_HOST and give
 # the service the same address — don't reopen it to 0.0.0.0.
-HOST = os.environ.get("KOKORO_HOST", "127.0.0.1:8123")
+HOST = os.environ.get("KOKORO_HOST", "127.0.0.1:8125")
 
 
 def _load_token() -> str | None:
     """Env first, then the shared 0600 token file the server reads.
 
-    The file exists so the hotkey paths (Hammerspoon, Automator) don't each
+    The file exists so desktop and explicit legacy launch paths do not each
     need the secret plumbed into their environment.
     """
     tok = (os.environ.get("KOKORO_TOKEN") or "").strip()
     if tok:
         return tok
     path = os.environ.get(
-        "KOKORO_TOKEN_FILE", os.path.expanduser("~/.config/kokoro/token")
+        "KOKORO_TOKEN_FILE", os.path.expanduser("~/.config/kokoro-voice-2-1/token")
     )
     try:
         with open(path) as fh:
@@ -106,7 +106,7 @@ def _state_dir() -> str:
             who = str(os.getuid())
         except AttributeError:  # Windows
             who = os.environ.get("USERNAME", "user")
-        base = os.path.join(tempfile.gettempdir(), f"kokoro-{who}")
+        base = os.path.join(tempfile.gettempdir(), f"kokoro-voice-2-1-{who}")
 
     os.makedirs(base, mode=0o700, exist_ok=True)
     # makedirs(exist_ok=True) accepts a pre-existing dir whatever its owner or
@@ -348,12 +348,12 @@ def notify(message: str) -> None:
 
 
 def emit_paths(text: str, voice: str | None, speed: float) -> int:
-    """Synthesize chunks and print each WAV path as it becomes ready.
+    """Legacy-host adapter: print each synthesized WAV path as it becomes ready.
 
-    Used by the Hammerspoon front-end, which plays the clips IN-PROCESS via
-    hs.sound. That matters: spawning `afplay` per chunk costs ~0.93s each
-    (measured), while in-process playback costs ~0.21s and can be eliminated
-    entirely by preloading the next clip while the current one plays.
+    Retained for the explicitly legacy Hammerspoon host. The supported Tauri
+    app does not call this mode. Hammerspoon plays clips in-process because
+    spawning `afplay` per chunk costs ~0.93s each (measured), while in-process
+    playback costs ~0.21s and can be hidden by preloading the next clip.
 
     The caller owns the files and is responsible for deleting them.
     """

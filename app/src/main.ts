@@ -1,3 +1,11 @@
+/**
+ * Kokoro Voice settings control plane.
+ *
+ * This frontend renders engine state and captures user input, but Rust owns
+ * process lifecycle, shortcut meaning/registration, permissions, and durable
+ * preferences. Keep platform policy out of this file; send captured facts to
+ * the backend and render its authoritative result.
+ */
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
@@ -8,6 +16,25 @@ type Health = {
   stt_ready?: boolean;
   auth_required?: boolean;
 };
+
+type HotkeySlot = "read" | "dictate" | "snip";
+
+type DictationState =
+  | "starting"
+  | "recording"
+  | "transcribing"
+  | "completed"
+  | "cancelled"
+  | "permission-denied"
+  | "device-unavailable"
+  | "timed-out"
+  | "live-typing"
+  | "clipboard-fallback"
+  | "cancelled-by-user";
+
+function isHotkeySlot(value: string | undefined): value is HotkeySlot {
+  return value === "read" || value === "dictate" || value === "snip";
+}
 
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
@@ -84,8 +111,14 @@ document.querySelectorAll<HTMLButtonElement>("button[data-cmd]").forEach((btn) =
   });
 });
 
-document.getElementById("open-privacy")?.addEventListener("click", () => {
-  openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy");
+document.getElementById("open-accessibility")?.addEventListener("click", async () => {
+  await invoke("retry_permission", { capability: "accessibility" });
+  await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+});
+
+document.getElementById("open-input-monitoring")?.addEventListener("click", async () => {
+  await invoke("retry_permission", { capability: "input-monitoring" });
+  await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
 });
 
 document.getElementById("export-diagnostics")?.addEventListener("click", async () => {
@@ -101,9 +134,17 @@ document.getElementById("run-system-check")?.addEventListener("click", async (ev
     const report = await invoke<Record<string, unknown>>("system_check");
     const permissions = report.permissions as Record<string, string>;
     const engine = report.engine as Record<string, string>;
-    detail.textContent = engine.status === "ok" && permissions.accessibility === "available"
-      ? "System check passed."
-      : "System check found an issue. Export diagnostics for details.";
+    if (engine.status !== "ok") {
+      detail.textContent = "The speech engine is not ready. Export diagnostics for details.";
+    } else if (permissions.accessibility !== "available") {
+      detail.textContent = "Accessibility is off. Enable Kokoro Voice, then run this check again.";
+    } else if (permissions.input_monitoring !== "available") {
+      detail.textContent = "Input Monitoring is off. Enable Kokoro Voice, then run this check again.";
+    } else {
+      detail.textContent = "System check passed. Shortcuts are listening.";
+    }
+  } catch (error) {
+    detail.textContent = `System check failed: ${error}`;
   } finally {
     button.disabled = false;
   }
@@ -159,9 +200,25 @@ document.getElementById("setup-cancel")?.addEventListener("click", async (ev) =>
 });
 
 // Show the real hotkeys rather than hardcoding them in the markup.
-type HotkeyResponse = Record<"read" | "dictate" | "snip", string> & {
-  bindings: Record<string, { label: string; registered: boolean; configurable: boolean }>;
+type HotkeyResponse = Record<HotkeySlot, string> & {
+  bindings: Record<HotkeySlot, { label: string; registered: boolean; configurable: boolean }>;
 };
+
+type HotkeyCapture = {
+  slot: HotkeySlot;
+  accelerator: string;
+  kind: "modifier-gesture" | "registered-shortcut";
+};
+
+// A shortcut is only proven after the runtime reports that the physical key
+// reached an action adapter. Saving and OS registration are necessary but are
+// not presented as end-to-end success.
+let awaitingHotkeyVerification: HotkeySlot | null = null;
+listen<HotkeySlot>("hotkey-triggered", (event) => {
+  if (event.payload !== awaitingHotkeyVerification) return;
+  detail.textContent = `${event.payload} shortcut verified — it reached Kokoro.`;
+  awaitingHotkeyVerification = null;
+});
 
 invoke<HotkeyResponse>("hotkeys").then((hk) => {
   const set = (id: string, v: string) => {
@@ -172,20 +229,21 @@ invoke<HotkeyResponse>("hotkeys").then((hk) => {
   set("key-dictate", hk.dictate);
   set("key-snip", hk.snip);
   document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) => {
-    const binding = hk.bindings?.[btn.dataset.rec ?? ""];
+    const slot = btn.dataset.rec;
+    const binding = isHotkeySlot(slot) ? hk.bindings[slot] : undefined;
     btn.hidden = binding ? !binding.configurable : false;
   });
   if (Object.values(hk.bindings).some((binding) => !binding.registered)) {
-    detail.textContent = "Hotkeys are not registered. Check Accessibility permission or shortcut conflicts.";
+    detail.textContent = "Shortcuts are off. Run System Check and enable the permission it names.";
   }
 });
 
 let testingDictation = false;
-listen<{ session: string; state: string }>("dictation-state", (e) => {
+listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
   if (e.payload.state === "starting") {
     testingDictation = document.activeElement?.id === "dictation-test";
   }
-  const messages: Record<string, string> = {
+  const messages: Record<DictationState, string> = {
     starting: "Opening microphone…",
     recording: "Listening…",
     transcribing: "Transcribing locally…",
@@ -194,8 +252,11 @@ listen<{ session: string; state: string }>("dictation-state", (e) => {
     "permission-denied": "Microphone permission denied. Open Privacy & Security.",
     "device-unavailable": "The selected microphone is unavailable.",
     "timed-out": "The microphone did not open in time.",
+    "live-typing": "Typing the local transcript…",
+    "clipboard-fallback": "The transcript was copied because the target could not be verified.",
+    "cancelled-by-user": "Dictation cancelled.",
   };
-  detail.textContent = messages[e.payload.state] ?? e.payload.state;
+  detail.textContent = messages[e.payload.state];
 });
 
 listen<string>("dictated", async () => {
@@ -303,6 +364,7 @@ async function initPrefs() {
 const MOD_GLYPH: Record<string, string> = {
   Control: "\u2303", Alt: "\u2325", Shift: "\u21e7", Command: "\u2318",
 };
+const MODIFIER_ORDER = ["Control", "Alt", "Shift", "Command"];
 
 function pretty(accel: string): string {
   return accel
@@ -311,26 +373,31 @@ function pretty(accel: string): string {
     .join("");
 }
 
-function accelFrom(e: KeyboardEvent): string | null {
-  const mods: string[] = [];
-  if (e.ctrlKey) mods.push("Control");
-  if (e.altKey) mods.push("Alt");
-  if (e.shiftKey) mods.push("Shift");
-  if (e.metaKey) mods.push("Command");
+function accelFrom(e: KeyboardEvent, observedModifiers: ReadonlySet<string>): string | null {
+  const modifiers = new Set(observedModifiers);
+  if (e.ctrlKey) modifiers.add("Control");
+  if (e.altKey) modifiers.add("Alt");
+  if (e.shiftKey) modifiers.add("Shift");
+  if (e.metaKey) modifiers.add("Command");
   const code = e.code;
   // A modifier on its own is not a shortcut the OS can register.
   if (/^(Control|Alt|Shift|Meta)(Left|Right)$/.test(code)) return null;
   // Function keys are valid with no modifier; anything else needs one.
-  if (mods.length === 0 && !/^F\d+$/.test(code)) return null;
-  return [...mods, code].join("+");
+  if (modifiers.size === 0 && !/^F\d+$/.test(code)) return null;
+  return [...MODIFIER_ORDER.filter((modifier) => modifiers.has(modifier)), code].join("+");
 }
 
 let hotkeyRecorderActive = false;
 document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) => {
   btn.addEventListener("click", async () => {
     if (hotkeyRecorderActive) return;
+    const slotValue = btn.dataset.rec;
+    if (!isHotkeySlot(slotValue)) {
+      detail.textContent = "Shortcut recorder is missing a valid action slot.";
+      return;
+    }
     hotkeyRecorderActive = true;
-    const slot = btn.dataset.rec!;
+    const slot = slotValue;
     const original = btn.textContent;
     const recorderButtons = document.querySelectorAll<HTMLButtonElement>("button[data-rec]");
     recorderButtons.forEach((button) => { button.disabled = true; });
@@ -347,9 +414,10 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
     btn.classList.add("recording");
     const pressedModifiers = new Set<string>();
     let finished = false;
+    let captureCommitted = false;
     let recorderTimeout: number | undefined;
 
-    const finish = async () => {
+    const finish = async (resumeAdapters: boolean) => {
       if (finished) return;
       finished = true;
       window.removeEventListener("keydown", onKey, true);
@@ -359,9 +427,31 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
       btn.classList.remove("recording");
       hotkeyRecorderActive = false;
       recorderButtons.forEach((button) => { button.disabled = false; });
+      if (resumeAdapters) {
+        try {
+          await invoke("end_hotkey_recording");
+        } catch (err) {
+          detail.textContent = String(err);
+        }
+      }
+    };
+
+    const saveCaptured = async (accel: string) => {
+      if (finished || captureCommitted) return;
+      captureCommitted = true;
       try {
-        await invoke("end_hotkey_recording");
+        const saved = await invoke<HotkeyCapture>("set_hotkey", { slot, accelerator: accel });
+        await finish(false); // set_hotkey already resumed and updated the platform controller.
+        const current = await invoke<HotkeyResponse>("hotkeys");
+        const currentLabel = current[slot];
+        const kbd = document.getElementById(`key-${slot}`);
+        if (kbd) kbd.textContent = pretty(currentLabel);
+        awaitingHotkeyVerification = slot;
+        detail.textContent = `${pretty(saved.accelerator)} registered for ${slot}. Press it now to verify.`;
       } catch (err) {
+        await finish(true); // Validation failed before commit; restore the active adapters.
+        const kbd = document.getElementById(`key-${slot}`);
+        if (kbd) kbd.textContent = String(err);
         detail.textContent = String(err);
       }
     };
@@ -373,57 +463,39 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
       if (/^Control/.test(e.code) || e.key === "Control") return "Control";
       if (/^Alt/.test(e.code) || e.key === "Alt") return "Alt";
       if (/^Shift/.test(e.code) || e.code === "CapsLock" || e.key === "Shift") return "Shift";
-      if (/^Meta/.test(e.code) || e.key === "Meta") return "Command";
+      if (/^(Meta|OS)/.test(e.code) || e.key === "Meta" || e.key === "OS" || e.key === "Super") return "Command";
       return null;
     };
 
     const onKey = async (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.code === "Escape") { await finish(); return; }
+      if (finished || captureCommitted) return;
+      if (e.code === "Escape") { await finish(true); return; }
       const modifier = modifierName(e);
       if (modifier) {
         pressedModifiers.add(modifier);
         return;
       }
-      const accel = accelFrom(e);
+      const accel = accelFrom(e, pressedModifiers);
       if (!accel) return;   // still waiting for a full combination
-      try {
-        await invoke("set_hotkey", { slot, accelerator: accel });
-        const kbd = document.getElementById(`key-${slot}`);
-        if (kbd) kbd.textContent = pretty(accel);
-        detail.textContent = `${pretty(accel)} saved for ${slot}.`;
-      } catch (err) {
-        const kbd = document.getElementById(`key-${slot}`);
-        if (kbd) kbd.textContent = String(err);
-      }
-      await finish();
+      await saveCaptured(accel);
     };
 
     const onKeyUp = async (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (finished || captureCommitted) return;
       if (!modifierName(e) || pressedModifiers.size < 2) return;
-      const order = ["Control", "Alt", "Shift", "Command"];
-      const accel = order.filter((modifier) => pressedModifiers.has(modifier)).join("+");
-      try {
-        await invoke("set_hotkey", { slot, accelerator: accel });
-        const kbd = document.getElementById(`key-${slot}`);
-        if (kbd) kbd.textContent = pretty(accel);
-        detail.textContent = `${pretty(accel)} saved for ${slot}.`;
-      } catch (err) {
-        const kbd = document.getElementById(`key-${slot}`);
-        if (kbd) kbd.textContent = String(err);
-        detail.textContent = String(err);
-      }
-      await finish();
+      const accel = MODIFIER_ORDER.filter((modifier) => pressedModifiers.has(modifier)).join("+");
+      await saveCaptured(accel);
     };
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("keyup", onKeyUp, true);
     // Avoid leaving shortcuts suspended forever if the recorder is abandoned,
     // but do not cancel on window blur: macOS/Deskflow can briefly report a
     // blur while a modifier chord is being delivered.
-    recorderTimeout = window.setTimeout(() => { void finish(); }, 15_000);
+    recorderTimeout = window.setTimeout(() => { void finish(true); }, 15_000);
   });
 });
 

@@ -1,8 +1,8 @@
 [package]
-name = "kokoro-voice"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+name = "kokoro-voice-2-1"
+version = "2.1.0-beta.1"
+description = "Isolated next-generation build of Kokoro Voice"
+authors = ["TYLERtools.net"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -39,7 +39,9 @@ core-foundation = "0.10.1"
 accessibility = "0.2.0"
 accessibility-sys = "0.2.0"
 macos-accessibility-client = "0.0.2"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow"] }
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSColor", "NSGraphics", "NSPanel", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "libc"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGEvent"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

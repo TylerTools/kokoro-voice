@@ -22,14 +22,32 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          version: "0.11.32"
+      - name: Verify locked Python dependencies
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            platform="aarch64-apple-darwin"
+            suffix="macos"
+          else
+            platform="x86_64-pc-windows-msvc"
+            suffix="windows"
+          fi
+          uv pip compile requirements.txt "requirements-${suffix}.txt" \
+            --python-version 3.12 --python-platform "$platform" \
+            --generate-hashes --no-annotate --no-header \
+            -o "$RUNNER_TEMP/requirements-${suffix}.lock"
+          cmp "requirements-${suffix}.lock" "$RUNNER_TEMP/requirements-${suffix}.lock"
       - run: npm ci
         working-directory: app
       - run: npm run build
         working-directory: app
+      - run: cargo fmt --check --manifest-path app/src-tauri/Cargo.toml
       - run: cargo test --manifest-path app/src-tauri/Cargo.toml
-      - run: cargo clippy --manifest-path app/src-tauri/Cargo.toml -- -D warnings
+      - run: cargo clippy --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: uv run --python 3.12 --with fastapi --with kokoro-onnx --with numpy --with soundfile python -m unittest discover -s tests -v
-      - run: uv run --python 3.12 python -m py_compile server.py client/dictate.py client/speak.py client/snip.py
+      - run: uv run --python 3.12 python -m compileall -q server.py stt_config.py client tests benchmark_stt.py smoke_test.py
+      - run: bash -n install.sh
       - name: Reject sensitive diagnostic fields
         shell: bash
         run: |
@@ -37,3 +55,6 @@ jobs:
             echo "Potential sensitive diagnostic field found"
             exit 1
           fi
+      - name: Reject generated source drift
+        shell: bash
+        run: git diff --check && git diff --exit-code

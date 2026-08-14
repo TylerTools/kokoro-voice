@@ -47,7 +47,7 @@ def _state_dir() -> str:
             who = str(os.getuid())
         except AttributeError:  # Windows
             who = os.environ.get("USERNAME", "user")
-        base = os.path.join(tempfile.gettempdir(), f"kokoro-{who}")
+        base = os.path.join(tempfile.gettempdir(), f"kokoro-voice-2-1-{who}")
     os.makedirs(base, mode=0o700, exist_ok=True)
     if hasattr(os, "getuid"):
         st = os.lstat(base)

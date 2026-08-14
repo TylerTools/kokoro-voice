@@ -53,3 +53,4 @@ class DictationControlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+"""Contract tests for session-safe dictation controls and bounded previews."""

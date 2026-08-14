@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# kokoro-voice installer — macOS (and Linux for the service + clients).
+# LEGACY kokoro-voice service installer — Linux, or explicit manual macOS use.
+#
+# The supported desktop app owns its engine lifecycle. Running this installer
+# beside Kokoro Voice.app creates a second launchd engine owner on the same
+# port. macOS therefore requires an explicit legacy override below.
 #
 # Idempotent: safe to re-run. Every step checks before it acts, so a partial
 # install can be repaired by running this again.
@@ -20,6 +24,10 @@ ok()   { printf '\033[1;32m ✓\033[0m %s\n' "$*"; }
 
 IS_MAC=false
 [[ "$(uname -s)" == "Darwin" ]] && IS_MAC=true
+
+if $IS_MAC && [[ "${KOKORO_ALLOW_LEGACY_INSTALL:-0}" != "1" ]]; then
+    die "legacy service install refused on macOS; use Kokoro Voice.app (set KOKORO_ALLOW_LEGACY_INSTALL=1 only for an intentional service-only setup)"
+fi
 
 # ── 1. uv ────────────────────────────────────────────────────────────────────
 say "Checking for uv"

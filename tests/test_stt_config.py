@@ -33,3 +33,4 @@ class SttSelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+"""Cross-platform STT backend-selection contract tests."""

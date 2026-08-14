@@ -1,22 +1,23 @@
+//! Kokoro Voice desktop composition root.
+//!
+//! This module owns first-run setup, engine lifecycle, Tauri commands, action
+//! orchestration, tray/UI composition, and shutdown. Domain logic belongs in
+//! the sibling modules below; do not add another composition root.
+//!
+//! Small Python sources ship in the bundle, while the private environment and
+//! models live in Application Support so app replacement preserves downloaded
+//! data and never writes through the code signature.
+
 #[cfg(target_os = "macos")]
 mod chords;
+mod dictation_protocol;
+mod hotkeys;
 mod text_backend;
-
-// Kokoro Voice — desktop app.
-//
-// The shell: first-run setup, tray, global hotkeys, settings UI, and ownership
-// of the engine process. Launching starts the engine; quitting stops it.
-//
-// The engine SOURCE ships inside the app bundle (a few small Python files), but
-// the heavy parts — the Python environment and ~500MB of model weights — are
-// built into the user's Application Support directory on first run. That keeps
-// the download at ~10MB instead of ~1.3GB, and lets the app be updated without
-// re-shipping the models.
-//
-// The actual work is still done by the Python clients (speak/dictate/snip),
-// which are measured, debugged, and shared with the Windows build.
+mod variant;
 
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -25,7 +26,9 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager,
 };
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+#[cfg(target_os = "windows")]
+use tauri_plugin_global_shortcut::ShortcutState;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 struct Engine(Mutex<Option<Child>>);
 
@@ -35,12 +38,14 @@ enum DictationStatus {
     Starting,
     Recording,
     Transcribing,
+    /// The authoritative final transcript was verified in the captured target.
     Completed,
     Cancelled,
     PermissionDenied,
     DeviceUnavailable,
     TimedOut,
     LiveTyping,
+    /// The final transcript was copied but was not verified in the target.
     ClipboardFallback,
     CancelledByUser,
 }
@@ -63,7 +68,16 @@ static SETUP_CANCELLED: AtomicBool = AtomicBool::new(false);
 static HOTKEYS_REGISTERED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static CHORDS_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static STATUS_PANEL: AtomicPtr<objc2_app_kit::NSPanel> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg(target_os = "macos")]
+static STATUS_WINDOW_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static STATUS_WINDOW_WIDTH_BITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "macos")]
+static STATUS_SPACE_WATCHER_STARTED: AtomicBool = AtomicBool::new(false);
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
+static LOG_LOCK: Mutex<()> = Mutex::new(());
 /// Set while we are intentionally shutting down, so the watchdog does not
 /// helpfully resurrect the engine we are trying to stop.
 static QUITTING: AtomicBool = AtomicBool::new(false);
@@ -82,23 +96,26 @@ fn home() -> std::path::PathBuf {
 fn engine_root() -> std::path::PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("Kokoro Voice")
+        .join(variant::APP_SUPPORT_DIR)
         .join("engine")
 }
 
 fn config_dir() -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
-    let d = home().join(".config/kokoro");
+    let d = home().join(".config").join(variant::CONFIG_DIR_NAME);
     #[cfg(not(target_os = "macos"))]
     let d = dirs::config_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("Kokoro Voice");
+        .join(variant::APP_SUPPORT_DIR);
     let _ = std::fs::create_dir_all(&d);
     d
 }
 
 fn structured_log(event: &str, fields: serde_json::Value) {
     use std::io::Write;
+    let Ok(_guard) = LOG_LOCK.lock() else {
+        return;
+    };
     let path = config_dir().join("events.jsonl");
     if path.metadata().map(|m| m.len()).unwrap_or(0) > 1_000_000 {
         let _ = std::fs::rename(&path, config_dir().join("events.previous.jsonl"));
@@ -132,7 +149,7 @@ fn python_path(root: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn port() -> String {
-    std::env::var("KOKORO_PORT").unwrap_or_else(|_| "8123".into())
+    std::env::var("KOKORO_PORT").unwrap_or_else(|_| variant::DEFAULT_PORT.into())
 }
 
 /// True once the environment and both model files are in place.
@@ -174,6 +191,20 @@ impl Paths {
     fn client(&self, name: &str) -> std::path::PathBuf {
         self.root.join("client").join(name)
     }
+}
+
+/// Construct a Python client command with every mutable/runtime boundary pinned
+/// to Kokoro Voice 2.1. Keeping this in one place prevents a new call site from
+/// silently talking to version 1 on port 8123 or sharing its control files.
+fn client_command(paths: &Paths, script: &str) -> Command {
+    let mut command = Command::new(&paths.python);
+    command
+        .arg(paths.client(script))
+        .current_dir(&paths.root)
+        .env("KOKORO_HOST", variant::CLIENT_HOST)
+        .env("KOKORO_TOKEN_FILE", config_dir().join("token"))
+        .env("KOKORO_STATE_DIR", config_dir().join("runtime"));
+    command
 }
 
 // ── engine lifecycle ─────────────────────────────────────────────────────────
@@ -458,6 +489,14 @@ fn platform_requirements() -> &'static str {
     }
 }
 
+fn platform_lockfile() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "requirements-windows.lock"
+    } else {
+        "requirements-macos.lock"
+    }
+}
+
 fn sync_engine_sources(app: &AppHandle, root: &std::path::Path) -> Result<(), String> {
     let src = app
         .path()
@@ -476,6 +515,8 @@ fn sync_engine_sources(app: &AppHandle, root: &std::path::Path) -> Result<(), St
         "benchmark_stt.py",
         "requirements.txt",
         platform_requirements(),
+        "requirements-macos.lock",
+        "requirements-windows.lock",
     ] {
         let from = src.join(name);
         if from.exists() {
@@ -580,20 +621,21 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
     }
 
     emit_step(app, 30, "Installing components… (a minute or two)");
-    for req in ["requirements.txt", platform_requirements()] {
-        let f = root.join(req);
-        if !f.exists() {
-            continue;
-        }
-        let st = Command::new(&uv)
-            .args(["pip", "install", "-r"])
-            .arg(&f)
-            .env("VIRTUAL_ENV", root.join(".venv"))
-            .status()
-            .map_err(|e| format!("uv pip install: {e}"))?;
-        if !st.success() {
-            return Err(format!("could not install {req}"));
-        }
+    let lockfile = platform_lockfile();
+    let lock = root.join(lockfile);
+    if !lock.exists() {
+        return Err(format!("locked dependency set is missing: {lockfile}"));
+    }
+    let st = Command::new(&uv)
+        .args(["pip", "install", "--require-hashes", "-r"])
+        .arg(&lock)
+        .env("VIRTUAL_ENV", root.join(".venv"))
+        .status()
+        .map_err(|e| format!("uv pip install: {e}"))?;
+    if !st.success() {
+        return Err(format!(
+            "could not install verified dependencies from {lockfile}"
+        ));
     }
     // mlx-whisper declares torch but only imports it in the weight-CONVERSION
     // path, which we never take. Verified that torch never enters sys.modules
@@ -824,10 +866,8 @@ fn microphone_devices() -> serde_json::Value {
     let Some(paths) = Paths::current() else {
         return serde_json::json!([]);
     };
-    Command::new(&paths.python)
-        .arg(paths.client("dictate.py"))
+    client_command(&paths, "dictate.py")
         .arg("--devices")
-        .current_dir(&paths.root)
         .output()
         .ok()
         .and_then(|o| serde_json::from_slice(&o.stdout).ok())
@@ -903,7 +943,7 @@ fn export_diagnostics(app: AppHandle) -> Result<String, String> {
         .path()
         .download_dir()
         .unwrap_or_else(|_| std::env::temp_dir());
-    let path = dir.join("kokoro-voice-diagnostics.json");
+    let path = dir.join(variant::DIAGNOSTICS_FILE);
     std::fs::write(
         &path,
         serde_json::to_vec_pretty(&document).map_err(|e| e.to_string())?,
@@ -947,14 +987,18 @@ fn permission_status() -> serde_json::Value {
     if cfg!(target_os = "macos") {
         #[cfg(target_os = "macos")]
         let accessibility = macos_accessibility_client::accessibility::application_is_trusted();
+        #[cfg(target_os = "macos")]
+        let input_monitoring = objc2_core_graphics::CGPreflightListenEventAccess();
         serde_json::json!({
             "accessibility": if accessibility { "available" } else { "required" },
+            "input_monitoring": if input_monitoring { "available" } else { "required" },
             "microphone": "checked-on-use",
             "screen_capture": "checked-on-use",
         })
     } else {
         serde_json::json!({
             "accessibility": "not-required",
+            "input_monitoring": "not-required",
             "microphone": "checked-on-use",
             "screen_capture": "available",
         })
@@ -970,10 +1014,8 @@ fn run_capability_test(capability: String) -> serde_json::Value {
             let Some(paths) = Paths::current() else {
                 return serde_json::json!({ "ok": false, "code": "engine-missing" });
             };
-            Command::new(&paths.python)
-                .arg(paths.client("dictate.py"))
+            client_command(&paths, "dictate.py")
                 .arg("--probe-device")
-                .current_dir(&paths.root)
                 .output()
                 .ok()
                 .and_then(|out| serde_json::from_slice(&out.stdout).ok())
@@ -1006,11 +1048,22 @@ fn retry_permission(capability: String) -> serde_json::Value {
             macos_accessibility_client::accessibility::application_is_trusted_with_prompt();
         return serde_json::json!({ "capability": capability, "available": available });
     }
+    #[cfg(target_os = "macos")]
+    if capability == "input-monitoring" {
+        let available = objc2_core_graphics::CGRequestListenEventAccess();
+        return serde_json::json!({ "capability": capability, "available": available });
+    }
     permission_status()
 }
 
 #[tauri::command]
-fn system_check() -> serde_json::Value {
+fn system_check(app: AppHandle) -> serde_json::Value {
+    #[cfg(target_os = "macos")]
+    if objc2_core_graphics::CGPreflightListenEventAccess()
+        && !HOTKEYS_REGISTERED.load(Ordering::SeqCst)
+    {
+        let _ = register_hotkeys(&app);
+    }
     serde_json::json!({
         "engine": engine_status(),
         "permissions": permission_status(),
@@ -1096,11 +1149,8 @@ fn run_client(app: &AppHandle, script: &str, args: &[&str]) {
         let _ = app.emit("engine-missing", ());
         return;
     };
-    let _ = Command::new(&paths.python)
-        .arg(paths.client(script))
+    let _ = client_command(&paths, script)
         .args(args)
-        .current_dir(&paths.root)
-        .env("KOKORO_TOKEN_FILE", config_dir().join("token"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
@@ -1134,7 +1184,106 @@ fn set_dictation_status(app: &AppHandle, id: &str, status: DictationStatus) {
 }
 
 #[cfg(target_os = "macos")]
-fn show_status_window_without_activation(window: &tauri::WebviewWindow) {
+fn status_window_collection_behavior() -> objc2_app_kit::NSWindowCollectionBehavior {
+    use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
+
+    // This is a transport overlay, not one of Kokoro's normal application
+    // windows. It must remain eligible while another app owns the active Space
+    // or Stage Manager set, including when that app is full-screen.
+    Behavior::CanJoinAllSpaces
+        | Behavior::CanJoinAllApplications
+        | Behavior::FullScreenAuxiliary
+        | Behavior::Stationary
+        | Behavior::IgnoresCycle
+}
+
+#[cfg(target_os = "macos")]
+fn status_window_level() -> objc2_app_kit::NSWindowLevel {
+    // Floating/status levels remain below another application's full-screen
+    // content. The transport is visible only while Kokoro is actively playing,
+    // recording, transcribing, or reporting a short notice, so the screen-saver
+    // overlay level is both necessary and tightly bounded.
+    objc2_app_kit::NSScreenSaverWindowLevel
+}
+
+#[cfg(target_os = "macos")]
+fn status_window_style_mask() -> objc2_app_kit::NSWindowStyleMask {
+    use objc2_app_kit::NSWindowStyleMask as Style;
+
+    Style::Borderless | Style::NonactivatingPanel
+}
+
+#[cfg(target_os = "macos")]
+fn status_window_needs_reassertion(requested: bool, visible: bool, on_active_space: bool) -> bool {
+    requested && (!visible || !on_active_space)
+}
+
+#[cfg(target_os = "macos")]
+fn place_status_panel(panel: &objc2_app_kit::NSPanel, width: f64) {
+    let Some(main_thread) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    let mut frame = objc2_app_kit::NSScreen::mainScreen(main_thread)
+        .map(|screen| screen.visibleFrame())
+        .unwrap_or_else(|| panel.frame());
+    frame.origin.x += frame.size.width - width - 18.0;
+    frame.origin.y += frame.size.height - 50.0 - 14.0;
+    frame.size.width = width;
+    frame.size.height = 50.0;
+    panel.setFrame_display(frame, true);
+}
+
+/// macOS can leave an already-visible all-Spaces panel assigned to the Space
+/// it was first ordered on when the user moves into another app's full-screen
+/// Space. The audio client remains alive, so hiding the only controls is an
+/// invalid state. Reassert the existing panel only after AppKit reports that
+/// it has fallen off the active Space; normal app switches do no extra work.
+#[cfg(target_os = "macos")]
+fn start_status_space_watcher(app: AppHandle) {
+    if STATUS_SPACE_WATCHER_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if QUITTING.load(Ordering::Relaxed) {
+            return;
+        }
+        if !STATUS_WINDOW_REQUESTED.load(Ordering::SeqCst) {
+            continue;
+        }
+        let Some(window) = app.get_webview_window("player") else {
+            continue;
+        };
+        let _ = window.run_on_main_thread(move || {
+            let panel_pointer = STATUS_PANEL.load(Ordering::SeqCst);
+            if panel_pointer.is_null() || !STATUS_WINDOW_REQUESTED.load(Ordering::SeqCst) {
+                return;
+            }
+            let panel = unsafe { &*panel_pointer };
+            if !status_window_needs_reassertion(true, panel.isVisible(), panel.isOnActiveSpace()) {
+                return;
+            }
+            let width = f64::from_bits(STATUS_WINDOW_WIDTH_BITS.load(Ordering::SeqCst));
+            panel.setCollectionBehavior(status_window_collection_behavior());
+            panel.setHidesOnDeactivate(false);
+            panel.setCanHide(false);
+            panel.setLevel(status_window_level());
+            place_status_panel(panel, width);
+            panel.orderFrontRegardless();
+            structured_log(
+                "status-window-reasserted",
+                serde_json::json!({
+                    "visible": panel.isVisible(),
+                    "active_space": panel.isOnActiveSpace(),
+                    "level": panel.level(),
+                }),
+            );
+        });
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn show_status_window_without_activation(window: &tauri::WebviewWindow, width: f64) {
     // WebviewWindow::show can activate a regular macOS application even when
     // the window itself is non-focusable. That steals the Accessibility target
     // between capture and the first live preview. AppKit's
@@ -1146,13 +1295,95 @@ fn show_status_window_without_activation(window: &tauri::WebviewWindow) {
             return;
         };
         let native = unsafe { &*pointer.cast::<objc2_app_kit::NSWindow>() };
-        native.orderFrontRegardless();
+        let Some(main_thread) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+
+        let panel_pointer = STATUS_PANEL.load(Ordering::SeqCst);
+        let panel = if panel_pointer.is_null() {
+            let mut frame = objc2_app_kit::NSScreen::mainScreen(main_thread)
+                .map(|screen| screen.visibleFrame())
+                .unwrap_or_else(|| native.frame());
+            frame.origin.x += frame.size.width - width - 18.0;
+            frame.origin.y += frame.size.height - 50.0 - 14.0;
+            frame.size.width = width;
+            frame.size.height = 50.0;
+            let panel = objc2_app_kit::NSPanel::initWithContentRect_styleMask_backing_defer(
+                main_thread.alloc(),
+                frame,
+                status_window_style_mask(),
+                objc2_app_kit::NSBackingStoreType::Buffered,
+                false,
+            );
+            panel.setFloatingPanel(true);
+            panel.setBecomesKeyOnlyIfNeeded(true);
+            panel.setOpaque(false);
+            panel.setBackgroundColor(Some(&native.backgroundColor()));
+            panel.setHasShadow(false);
+            unsafe { panel.setReleasedWhenClosed(false) };
+            if let Some(content_view) = native.contentView() {
+                panel.setContentView(Some(&content_view));
+                // Tao's resize delegate assumes its NSWindow always has a
+                // content view. Keep that invariant after transferring the
+                // actual player webview into the overlay panel.
+                let placeholder =
+                    objc2_app_kit::NSView::initWithFrame(main_thread.alloc(), native.frame());
+                native.setContentView(Some(&placeholder));
+            }
+            native.orderOut(None);
+            let panel_pointer = objc2::rc::Retained::into_raw(panel);
+            STATUS_PANEL.store(panel_pointer, Ordering::SeqCst);
+            unsafe { &*panel_pointer }
+        } else {
+            unsafe { &*panel_pointer }
+        };
+
+        STATUS_WINDOW_WIDTH_BITS.store(width.to_bits(), Ordering::SeqCst);
+        STATUS_WINDOW_REQUESTED.store(true, Ordering::SeqCst);
+        place_status_panel(panel, width);
+        panel.setCollectionBehavior(status_window_collection_behavior());
+        panel.setHidesOnDeactivate(false);
+        panel.setCanHide(false);
+        // Do this synchronously in the same main-thread turn as ordering the
+        // window. Tauri's set_always_on_top queues an asynchronous floating-
+        // level update that can race this order operation and leave the player
+        // under a full-screen app or on another Space.
+        panel.setLevel(status_window_level());
+        panel.orderFrontRegardless();
+        structured_log(
+            "status-window-shown",
+            serde_json::json!({
+                "visible": panel.isVisible(),
+                "active_space": panel.isOnActiveSpace(),
+                "level": panel.level(),
+                "native_panel": true,
+                "joins_all_spaces": true,
+                "joins_all_applications": true,
+            }),
+        );
     });
 }
 
 #[cfg(not(target_os = "macos"))]
-fn show_status_window_without_activation(window: &tauri::WebviewWindow) {
+fn show_status_window_without_activation(window: &tauri::WebviewWindow, _width: f64) {
     let _ = window.show();
+}
+
+#[cfg(target_os = "macos")]
+fn hide_status_window(window: &tauri::WebviewWindow) {
+    STATUS_WINDOW_REQUESTED.store(false, Ordering::SeqCst);
+    let window = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let panel_pointer = STATUS_PANEL.load(Ordering::SeqCst);
+        if !panel_pointer.is_null() {
+            unsafe { &*panel_pointer }.orderOut(None);
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hide_status_window(window: &tauri::WebviewWindow) {
+    let _ = window.hide();
 }
 
 /// Park the transport in the upper-right of the work area and show it.
@@ -1163,20 +1394,21 @@ fn show_player(app: &AppHandle) {
     // This status bubble must never become the Accessibility-focused element;
     // dictation owns and validates the editor that was focused before it opens.
     let _ = w.set_focusable(false);
-    let _ = w.set_size(tauri::LogicalSize::new(152.0, 50.0));
-    if let Ok(Some(mon)) = w.primary_monitor() {
-        let scale = mon.scale_factor();
-        let size = mon.size().to_logical::<f64>(scale);
-        let pos = mon.position().to_logical::<f64>(scale);
-        let _ = w.set_position(tauri::LogicalPosition::new(
-            pos.x + size.width - 170.0,
-            pos.y + 14.0,
-        ));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = w.set_size(tauri::LogicalSize::new(152.0, 50.0));
+        if let Ok(Some(mon)) = w.primary_monitor() {
+            let scale = mon.scale_factor();
+            let work_area = mon.work_area();
+            let size = work_area.size.to_logical::<f64>(scale);
+            let pos = work_area.position.to_logical::<f64>(scale);
+            let _ = w.set_position(tauri::LogicalPosition::new(
+                pos.x + size.width - 170.0,
+                pos.y + 14.0,
+            ));
+        }
     }
-    show_status_window_without_activation(&w);
-    // Never steal focus: this appears mid-read, and taking focus would yank the
-    // caret out of whatever the user is actually working in.
-    let _ = w.set_always_on_top(true);
+    show_status_window_without_activation(&w, 152.0);
 }
 
 fn show_player_notice(app: &AppHandle, message: &str) {
@@ -1184,22 +1416,25 @@ fn show_player_notice(app: &AppHandle, message: &str) {
         return;
     };
     let _ = w.set_focusable(false);
-    let _ = w.set_size(tauri::LogicalSize::new(250.0, 50.0));
-    if let Ok(Some(mon)) = w.primary_monitor() {
-        let scale = mon.scale_factor();
-        let size = mon.size().to_logical::<f64>(scale);
-        let pos = mon.position().to_logical::<f64>(scale);
-        let _ = w.set_position(tauri::LogicalPosition::new(
-            pos.x + size.width - 268.0,
-            pos.y + 14.0,
-        ));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = w.set_size(tauri::LogicalSize::new(250.0, 50.0));
+        if let Ok(Some(mon)) = w.primary_monitor() {
+            let scale = mon.scale_factor();
+            let work_area = mon.work_area();
+            let size = work_area.size.to_logical::<f64>(scale);
+            let pos = work_area.position.to_logical::<f64>(scale);
+            let _ = w.set_position(tauri::LogicalPosition::new(
+                pos.x + size.width - 268.0,
+                pos.y + 14.0,
+            ));
+        }
     }
     let encoded = serde_json::to_string(message).unwrap_or_else(|_| "\"Kokoro error\"".into());
     let _ = w.eval(format!(
         "window.__kokoroShowNotice && window.__kokoroShowNotice({encoded})"
     ));
-    show_status_window_without_activation(&w);
-    let _ = w.set_always_on_top(true);
+    show_status_window_without_activation(&w, 250.0);
 }
 
 /// Tell the transport what it is representing: "playing" or "recording".
@@ -1219,7 +1454,7 @@ fn set_player_mode(app: &AppHandle, mode: &str) {
 
 fn hide_player(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("player") {
-        let _ = w.hide();
+        hide_status_window(&w);
     }
 }
 
@@ -1233,17 +1468,11 @@ fn run_client_monitored(app: &AppHandle, script: &str, args: Vec<String>) {
     };
     show_player(app);
     set_player_mode(app, "playing");
-    // Resolve the script path up front: the &str cannot outlive this call, and
-    // the monitoring thread does.
-    let client = paths.client(script);
+    // Own the script name because the monitoring thread outlives this call.
+    let script = script.to_string();
     let app2 = app.clone();
     std::thread::spawn(move || {
-        let output = Command::new(&paths.python)
-            .arg(client)
-            .args(&args)
-            .current_dir(&paths.root)
-            .env("KOKORO_TOKEN_FILE", config_dir().join("token"))
-            .output();
+        let output = client_command(&paths, &script).args(&args).output();
         let notice = match output {
             Ok(result) => String::from_utf8_lossy(&result.stdout)
                 .lines()
@@ -1277,10 +1506,8 @@ fn toggle_playback() -> String {
     let Some(paths) = Paths::current() else {
         return "idle".into();
     };
-    Command::new(&paths.python)
-        .arg(paths.client("speak.py"))
+    client_command(&paths, "speak.py")
         .arg("--toggle")
-        .current_dir(&paths.root)
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -1297,6 +1524,37 @@ fn stop_speaking(app: AppHandle) {
     hide_player(&app);
 }
 
+fn snip_result_code(success: bool, stdout: &str, stderr: &str) -> Option<&'static str> {
+    let output = stdout.trim();
+    if success && !output.is_empty() && !output.starts_with("ERROR") {
+        return None;
+    }
+    if output.starts_with("CANCELLED") {
+        return Some(if stderr.trim().is_empty() {
+            "cancelled"
+        } else {
+            "capture-failed"
+        });
+    }
+    if output.contains("no text found") {
+        Some("no-text")
+    } else if output.starts_with("ERROR") || !stderr.trim().is_empty() {
+        Some("ocr-failed")
+    } else {
+        Some("empty-result")
+    }
+}
+
+fn snip_failure_notice(code: &str) -> Option<&'static str> {
+    match code {
+        "cancelled" => None,
+        "capture-failed" => Some("Screen capture failed — check Screen Recording permission"),
+        "no-text" => Some("No readable text found in that area"),
+        "ocr-failed" => Some("Text recognition failed — try the snip again"),
+        _ => Some("Snip could not start — run System Check"),
+    }
+}
+
 /// Snip, then read what was captured.
 ///
 /// The app orchestrates the two halves rather than letting snip.py invoke the
@@ -1308,26 +1566,55 @@ fn stop_speaking(app: AppHandle) {
 #[tauri::command]
 fn snip_and_read(app: AppHandle) {
     if is_dictating(&app) {
+        structured_log(
+            "snip-rejected",
+            serde_json::json!({ "code": "dictation-active" }),
+        );
         return;
     }
     let Some(paths) = Paths::current() else {
+        structured_log(
+            "snip-failed",
+            serde_json::json!({ "code": "engine-missing" }),
+        );
         let _ = app.emit("engine-missing", ());
         return;
     };
+    structured_log("snip-trigger", serde_json::json!({ "action": "start" }));
     let app2 = app.clone();
     std::thread::spawn(move || {
         // No player yet: the crosshair IS the feedback, and anything floating
         // on screen would be in the way.
-        let out = Command::new(&paths.python)
-            .arg(paths.client("snip.py"))
-            .current_dir(&paths.root)
-            .env("KOKORO_TOKEN_FILE", config_dir().join("token"))
-            .output();
-        let Ok(out) = out else { return };
+        let out = client_command(&paths, "snip.py").output();
+        let Ok(out) = out else {
+            structured_log("snip-failed", serde_json::json!({ "code": "spawn-failed" }));
+            show_player_notice(&app2, "Snip could not start — run System Check");
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            hide_player(&app2);
+            return;
+        };
         let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if text.is_empty() || text.starts_with("CANCELLED") || text.starts_with("ERROR") {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if let Some(code) = snip_result_code(out.status.success(), &text, &stderr) {
+            structured_log(
+                if code == "cancelled" {
+                    "snip-cancelled"
+                } else {
+                    "snip-failed"
+                },
+                serde_json::json!({ "code": code }),
+            );
+            if let Some(message) = snip_failure_notice(code) {
+                show_player_notice(&app2, message);
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                hide_player(&app2);
+            }
             return;
         }
+        structured_log(
+            "snip-ocr-completed",
+            serde_json::json!({ "characters": text.chars().count() }),
+        );
         let mut args = vec!["--text".to_string(), text];
         args.extend(voice_args());
         run_client_monitored(&app2, "speak.py", args);
@@ -1441,6 +1728,14 @@ fn record_verified_insertion(
     }
 }
 
+fn successful_dictation_status(final_inserted: bool) -> DictationStatus {
+    if final_inserted {
+        DictationStatus::Completed
+    } else {
+        DictationStatus::ClipboardFallback
+    }
+}
+
 /// Start recording. The transcript is typed when the recorder exits.
 fn dictation_start(app: &AppHandle) {
     let id = format!(
@@ -1520,11 +1815,7 @@ fn dictation_start(app: &AppHandle) {
     let ducked = {
         let st = playback_state(&paths);
         if st == "playing" {
-            let _ = Command::new(&paths.python)
-                .arg(paths.client("speak.py"))
-                .arg("--pause")
-                .current_dir(&paths.root)
-                .status();
+            let _ = client_command(&paths, "speak.py").arg("--pause").status();
             true
         } else {
             false
@@ -1545,15 +1836,14 @@ fn dictation_start(app: &AppHandle) {
         // second later, after Whisper has finished. The player therefore sat on
         // "Listening…" with the mic already closed, which reads as stuck on and
         // as though it were still recording you.
-        let mut recorder = Command::new(&paths.python);
+        let mut recorder = client_command(&paths, "dictate.py");
         recorder
-            .arg(paths.client("dictate.py"))
             .arg("--record")
             .args(["--session", &id])
-            .current_dir(&paths.root)
-            .env("KOKORO_TOKEN_FILE", config_dir().join("token"))
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            // The protocol is stdout-only. Leaving stderr piped without a
+            // reader can fill the OS pipe and deadlock a long transcription.
+            .stderr(Stdio::null());
         if load_prefs()
             .get("live_preview")
             .and_then(|value| value.as_bool())
@@ -1568,6 +1858,7 @@ fn dictation_start(app: &AppHandle) {
 
         let mut lines_out: Vec<String> = Vec::new();
         let mut startup_timed_out = false;
+        let mut final_inserted = false;
         let child_spawn_failed = child.is_err();
         if let Ok(mut child) = child {
             if let Some(d) = app2.try_state::<Dictation>() {
@@ -1594,7 +1885,10 @@ fn dictation_start(app: &AppHandle) {
                 // PortAudio may block forever while opening a denied or broken
                 // device. The child must prove that recording started.
                 match rx.recv_timeout(std::time::Duration::from_secs(8)) {
-                    Ok(line) if line == "RECORDING" => {
+                    Ok(line)
+                        if dictation_protocol::parse(&line)
+                            == dictation_protocol::Event::Recording =>
+                    {
                         structured_log(
                             "dictation-recorder-ready",
                             serde_json::json!({ "session": id }),
@@ -1631,38 +1925,50 @@ fn dictation_start(app: &AppHandle) {
                 let mut target = target;
                 let mut clipboard_fallback = target.is_none();
                 while let Ok(line) = rx.recv() {
-                    if line.starts_with("TRANSCRIBING") {
-                        // Mic is closed; say so immediately.
-                        accepting_preview = false;
-                        show_player(&app2);
-                        set_player_mode(&app2, "transcribing");
-                        set_dictation_status(&app2, &id, DictationStatus::Transcribing);
-                    } else if line == "RETRYING engine" {
-                        structured_log("engine-retry", serde_json::json!({ "session": id }));
-                        spawn_engine_and_record(&app2);
-                    } else if line == "INACTIVITY_WARNING" {
-                        show_player_notice(&app2, "Still recording — release or press Escape");
-                    } else if let Some(metrics) = line.strip_prefix("METRICS ") {
-                        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(metrics) {
-                            value["schema_version"] = serde_json::json!(1);
-                            value["measured_at_ms"] =
-                                serde_json::json!(std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis());
-                            if let Some(backend) = engine_status().get("stt_backend").cloned() {
-                                value["backend"] = backend;
-                            }
-                            let _ = write_json_atomic(&performance_profile_file(), &value);
+                    use dictation_protocol::Event;
+                    match dictation_protocol::parse(&line) {
+                        Event::Transcribing(_) => {
+                            // Mic is closed; say so immediately.
+                            accepting_preview = false;
+                            show_player(&app2);
+                            set_player_mode(&app2, "transcribing");
+                            set_dictation_status(&app2, &id, DictationStatus::Transcribing);
                         }
-                    } else if accepting_preview {
-                        let desired = if let Some(text) = line.strip_prefix("PREVIEW_FULL ") {
-                            Some(text.to_string())
-                        } else {
-                            line.strip_prefix("PREVIEW_ROLLING ")
-                                .map(|text| merge_rolling_text(&live_text, text))
-                        };
-                        if let Some(desired) = desired.filter(|text| text != &live_text) {
+                        Event::RetryingEngine => {
+                            structured_log("engine-retry", serde_json::json!({ "session": id }));
+                            spawn_engine_and_record(&app2);
+                        }
+                        Event::InactivityWarning => {
+                            show_player_notice(&app2, "Still recording — release or press Escape");
+                        }
+                        Event::Metrics(metrics) => {
+                            if let Ok(mut value) =
+                                serde_json::from_str::<serde_json::Value>(metrics)
+                            {
+                                value["schema_version"] = serde_json::json!(1);
+                                value["measured_at_ms"] =
+                                    serde_json::json!(std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis());
+                                if let Some(backend) = engine_status().get("stt_backend").cloned() {
+                                    value["backend"] = backend;
+                                }
+                                let _ = write_json_atomic(&performance_profile_file(), &value);
+                            }
+                        }
+                        Event::PreviewFull(text) | Event::PreviewRolling(text)
+                            if accepting_preview =>
+                        {
+                            let desired = match dictation_protocol::parse(&line) {
+                                Event::PreviewFull(_) => text.to_string(),
+                                Event::PreviewRolling(_) => merge_rolling_text(&live_text, text),
+                                _ => unreachable!("matched preview event"),
+                            };
+                            if desired == live_text {
+                                lines_out.push(line);
+                                continue;
+                            }
                             if !clipboard_fallback {
                                 let outcome = PlatformTextBackend::apply_revision(
                                     target.as_mut().expect("checked target"),
@@ -1743,6 +2049,7 @@ fn dictation_start(app: &AppHandle) {
                                 }
                             }
                         }
+                        _ => {}
                     }
                     lines_out.push(line);
                 }
@@ -1750,7 +2057,12 @@ fn dictation_start(app: &AppHandle) {
                 // The final full-context pass is authoritative. Correct only
                 // the mutable suffix already visible in the target field.
                 if let Some(final_text) =
-                    lines_out.iter().find_map(|line| line.strip_prefix("TEXT "))
+                    lines_out
+                        .iter()
+                        .find_map(|line| match dictation_protocol::parse(line) {
+                            dictation_protocol::Event::FinalText(text) => Some(text),
+                            _ => None,
+                        })
                 {
                     // Always reconcile the authoritative final transcript from
                     // the last text that was actually verified in the field.
@@ -1774,6 +2086,7 @@ fn dictation_start(app: &AppHandle) {
                     }
                     set_clipboard(final_text);
                     if outcome == ApplyOutcome::Applied {
+                        final_inserted = true;
                         inserted_text = final_text.to_string();
                         structured_log(
                             "dictation-final-inserted",
@@ -1812,32 +2125,43 @@ fn dictation_start(app: &AppHandle) {
 
         hide_player(&app2);
         if ducked {
-            let _ = Command::new(&paths.python)
-                .arg(paths.client("speak.py"))
-                .arg("--resume")
-                .current_dir(&paths.root)
-                .status();
+            let _ = client_command(&paths, "speak.py").arg("--resume").status();
         }
         let mut completed = false;
         for line in &lines_out {
-            if let Some(text) = line.strip_prefix("TEXT ") {
+            if let dictation_protocol::Event::FinalText(text) = dictation_protocol::parse(line) {
                 let _ = app2.emit("dictated", text);
                 completed = true;
             }
         }
-        if lines_out.iter().any(|line| line == "CANCELLED") {
+        if lines_out
+            .iter()
+            .any(|line| dictation_protocol::parse(line) == dictation_protocol::Event::Cancelled)
+        {
             set_dictation_status(&app2, &id, DictationStatus::CancelledByUser);
         } else if completed {
-            set_dictation_status(&app2, &id, DictationStatus::Completed);
+            set_dictation_status(&app2, &id, successful_dictation_status(final_inserted));
         } else if startup_timed_out {
             // The timeout state was already emitted at the point of failure.
         } else if child_spawn_failed {
             set_dictation_status(&app2, &id, DictationStatus::DeviceUnavailable);
-        } else if lines_out.iter().any(|l| l.contains("permission")) {
+        } else if lines_out.iter().any(|line| {
+            matches!(
+                dictation_protocol::parse(line),
+                dictation_protocol::Event::Error(message) if message.contains("permission")
+            )
+        }) {
             set_dictation_status(&app2, &id, DictationStatus::PermissionDenied);
-        } else if lines_out.iter().any(|l| l.starts_with("ERROR microphone")) {
+        } else if lines_out.iter().any(|line| {
+            matches!(
+                dictation_protocol::parse(line),
+                dictation_protocol::Event::Error(message) if message.starts_with("microphone")
+            )
+        }) {
             set_dictation_status(&app2, &id, DictationStatus::DeviceUnavailable);
-        } else if lines_out.iter().any(|l| l == "ERROR no audio captured") {
+        } else if lines_out.iter().any(|line| {
+            dictation_protocol::parse(line) == dictation_protocol::Event::Error("no audio captured")
+        }) {
             set_dictation_status(&app2, &id, DictationStatus::Cancelled);
             show_player_notice(&app2, "No speech captured — hold the keys while speaking");
         } else {
@@ -1855,10 +2179,8 @@ fn dictation_start(app: &AppHandle) {
 
 /// idle | playing | paused, straight from the speak client.
 fn playback_state(paths: &Paths) -> String {
-    Command::new(&paths.python)
-        .arg(paths.client("speak.py"))
+    client_command(paths, "speak.py")
         .arg("--status")
-        .current_dir(&paths.root)
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -1906,128 +2228,112 @@ fn dictation_cancel(app: &AppHandle) {
 
 // ── hotkeys ──────────────────────────────────────────────────────────────────
 
-// macOS uses passive modifier-only gestures because that is the required
-// Deskflow input path. Windows uses registered accelerators with a real key.
+// macOS routes every shortcut through Quartz because that is the input boundary
+// Deskflow demonstrably reaches. Windows uses registered global accelerators.
 #[tauri::command]
 fn hotkeys() -> serde_json::Value {
-    let (read, dictate, snip) = if cfg!(target_os = "macos") {
-        let (fallback_read, fallback_dictate, snip) = hotkey_prefs();
-        (
-            format!("⌃⌘ tap · {fallback_read}"),
-            format!("⇧⌘ hold · {fallback_dictate}"),
-            snip,
-        )
-    } else {
-        let (r, d, n) = hotkey_prefs();
-        (r, d, n)
-    };
-    let registered = HOTKEYS_REGISTERED.load(Ordering::SeqCst);
-    serde_json::json!({
-        "read": read,
-        "dictate": dictate,
-        "snip": snip,
-        "bindings": {
-            "read": { "label": read, "registered": registered, "configurable": true },
-            "dictate": { "label": dictate, "registered": registered, "configurable": true },
-            "snip": { "label": snip, "registered": registered, "configurable": true }
-        }
-    })
+    hotkeys::response(
+        &load_prefs(),
+        HOTKEYS_REGISTERED.load(Ordering::SeqCst),
+        cfg!(target_os = "macos"),
+    )
 }
 
-/// Hotkeys, all plain accelerators.
-///
-/// This is the mechanism that was CONFIRMED WORKING on this machine (commit
-/// 1ad2183). Modifier-only chords replaced it, were never verified here, and
-/// broke input for several rounds. They are gone. Anything the user wants
-/// instead is set with the recorder below, which captures a real key press —
-/// so the binding is whatever actually arrives, KVM translation included.
-fn hotkey_prefs() -> (String, String, String) {
-    let p = load_prefs();
-    let get = |k: &str, d: &str| {
-        p.get(k)
-            .and_then(|v| v.as_str())
-            .filter(|v| !v.is_empty())
-            .unwrap_or(d)
-            .to_string()
-    };
-    (
-        get("hk_read", "Control+Alt+R"),
-        get("hk_dictate", "Control+Alt+W"),
-        get("hk_snip", "Control+Alt+KeyD"),
-    )
+/// Emit the same event for both shortcut adapters. The settings UI uses this
+/// as the end-to-end proof that a recorded physical shortcut reached Kokoro;
+/// registration alone is not considered success.
+fn hotkey_triggered(app: &AppHandle, slot: hotkeys::Slot) {
+    structured_log(
+        "hotkey-triggered",
+        serde_json::json!({ "slot": slot.name() }),
+    );
+    let _ = app.emit("hotkey-triggered", slot.name());
 }
 
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     HOTKEYS_REGISTERED.store(false, Ordering::SeqCst);
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
+    let config = hotkeys::Config::from_preferences(&load_prefs());
 
     #[cfg(target_os = "macos")]
     {
-        let (r, d, n) = hotkey_prefs();
-        let read = r
-            .parse::<Shortcut>()
-            .map_err(|_| format!("read shortcut is not valid: {r}"))?;
-        let dictate = d
-            .parse::<Shortcut>()
-            .map_err(|_| format!("dictation shortcut is not valid: {d}"))?;
-        let snip = n
-            .parse::<Shortcut>()
-            .map_err(|_| format!("snip shortcut is not valid: {n}"))?;
-        gs.on_shortcuts(
-            [read, dictate, snip],
-            move |app, shortcut, event| match event.state {
-                ShortcutState::Pressed if shortcut == &read => read_selection(app.clone()),
-                ShortcutState::Pressed if shortcut == &dictate => dictation_start(app),
-                ShortcutState::Released if shortcut == &dictate => dictation_stop(app),
-                ShortcutState::Pressed if shortcut == &snip => snip_and_read(app.clone()),
-                _ => {}
-            },
-        )
-        .map_err(|e| format!("could not register fallback hotkeys: {e}"))?;
+        if !objc2_core_graphics::CGPreflightListenEventAccess() {
+            return Err(
+                "Input Monitoring is required for shortcuts; enable Kokoro Voice 2.1 in Privacy & Security"
+                    .into(),
+            );
+        }
+        chords::configure_shortcuts(&config.read, &config.dictate, &config.snip)?;
 
         if CHORDS_STARTED
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
             let read_app = app.clone();
+            let read_event_app = app.clone();
             let start_app = app.clone();
+            let start_event_app = app.clone();
             let stop_app = app.clone();
             let cancel_app = app.clone();
+            let snip_app = app.clone();
+            let snip_event_app = app.clone();
             if let Err(e) = chords::watch(
-                move || read_selection(read_app.clone()),
-                move || dictation_start(&start_app),
+                move || {
+                    hotkey_triggered(&read_event_app, hotkeys::Slot::Read);
+                    read_selection(read_app.clone());
+                },
+                move || {
+                    hotkey_triggered(&start_event_app, hotkeys::Slot::Dictate);
+                    dictation_start(&start_app);
+                },
                 move || dictation_stop(&stop_app),
                 move || dictation_cancel(&cancel_app),
+                move || {
+                    hotkey_triggered(&snip_event_app, hotkeys::Slot::Snip);
+                    snip_and_read(snip_app.clone());
+                },
             ) {
                 CHORDS_STARTED.store(false, Ordering::SeqCst);
                 return Err(e);
             }
         }
         HOTKEYS_REGISTERED.store(true, Ordering::SeqCst);
+        structured_log(
+            "hotkeys-registered",
+            serde_json::json!({
+                "profile": "mac-quartz-controller",
+                "read": config.read,
+                "dictate": config.dictate,
+                "snip": config.snip,
+                "modifier_prefix_grace_ms": chords::DICTATE_PREFIX_GRACE_MS,
+            }),
+        );
         Ok(())
     }
 
     #[cfg(target_os = "windows")]
     {
-        let (r, d, n) = hotkey_prefs();
         let parse = |a: &str, what: &str| -> Result<Shortcut, String> {
             a.parse::<Shortcut>()
                 .map_err(|_| format!("{what} shortcut is not valid: {a}"))
         };
-        let read = parse(&r, "read")?;
-        let dictate = parse(&d, "dictate")?;
-        let snip = parse(&n, "snip")?;
+        let read = parse(&config.read, "read")?;
+        let dictate = parse(&config.dictate, "dictate")?;
+        let snip = parse(&config.snip, "snip")?;
 
         let result = gs
             .on_shortcuts([read, dictate, snip], move |app, sc, event| {
                 match event.state {
                     ShortcutState::Pressed => {
                         if sc == &read {
+                            hotkey_triggered(app, hotkeys::Slot::Read);
                             read_selection(app.clone());
                         } else if sc == &snip {
+                            hotkey_triggered(app, hotkeys::Slot::Snip);
                             snip_and_read(app.clone());
                         } else if sc == &dictate {
+                            hotkey_triggered(app, hotkeys::Slot::Dictate);
                             dictation_start(app); // push to talk
                         }
                     }
@@ -2074,87 +2380,54 @@ fn end_hotkey_recording(app: AppHandle) -> Result<(), String> {
     result
 }
 
-fn fixed_macos_modifier_gesture(slot: &str, accelerator: &str) -> bool {
-    let mut parts: Vec<_> = accelerator.split('+').collect();
-    parts.sort_unstable();
-    matches!(
-        (slot, parts.as_slice()),
-        ("read", ["Command", "Control"]) | ("dictate", ["Command", "Shift"])
-    )
-}
-
-fn modifier_only(accelerator: &str) -> bool {
-    !accelerator.is_empty()
-        && accelerator
-            .split('+')
-            .all(|part| matches!(part, "Control" | "Alt" | "Shift" | "Command"))
-}
-
 #[tauri::command]
-fn set_hotkey(app: AppHandle, slot: String, accelerator: String) -> Result<String, String> {
-    let key = match slot.as_str() {
-        "read" => "hk_read",
-        "dictate" => "hk_dictate",
-        "snip" => "hk_snip",
-        _ => return Err("unknown slot".into()),
-    };
-    // macOS's two required modifier-only gestures are handled by the Quartz
-    // watcher rather than the global-shortcut plugin. Recording the existing
-    // gesture is still a successful operation; it must not leave the UI stuck
-    // or manufacture a microphone session while the recorder is open.
-    if cfg!(target_os = "macos") && modifier_only(&accelerator) {
-        if fixed_macos_modifier_gesture(&slot, &accelerator) {
-            structured_log(
-                "hotkey-saved",
-                serde_json::json!({ "slot": slot, "kind": "modifier-gesture" }),
-            );
-            return Ok(accelerator);
-        }
-        return Err(match slot.as_str() {
-            "read" => "The macOS Read gesture is Control+Command; add a letter to record a fallback shortcut.".into(),
-            "dictate" => "The macOS Dictate gesture is Shift+Command; add a letter to record a fallback shortcut.".into(),
-            _ => "That shortcut needs a letter, number, or function key.".into(),
-        });
+fn set_hotkey(
+    app: AppHandle,
+    slot: String,
+    accelerator: String,
+) -> Result<hotkeys::Capture, String> {
+    let slot = hotkeys::Slot::parse(&slot)?;
+    let capture = hotkeys::classify_capture(slot, &accelerator, cfg!(target_os = "macos"))?;
+    if capture.kind == hotkeys::CaptureKind::RegisteredShortcut {
+        accelerator
+            .parse::<Shortcut>()
+            .map_err(|_| format!("that combination cannot be used: {accelerator}"))?;
     }
-    // Validate BEFORE saving: a bad accelerator saved to prefs would leave the
-    // app with no working hotkeys at every future launch.
-    accelerator
-        .parse::<Shortcut>()
-        .map_err(|_| format!("that combination cannot be used: {accelerator}"))?;
 
     let mut p = load_prefs();
+    let key = slot.preference_key();
     let previous = p.get(key).and_then(|v| v.as_str()).map(String::from);
     p[key] = serde_json::json!(accelerator);
-    let _ = std::fs::write(
-        prefs_file(),
-        serde_json::to_string_pretty(&p).unwrap_or_default(),
-    );
+    write_json_atomic(&prefs_file(), &p)
+        .map_err(|error| format!("could not save shortcut: {error}"))?;
+
+    // A successful commit resumes the controller and installs the candidate
+    // exactly once. The frontend calls end_hotkey_recording only for cancel,
+    // timeout, or validation failure.
+    #[cfg(target_os = "macos")]
+    chords::set_recorder_suspended(false);
 
     if let Err(e) = register_hotkeys(&app) {
-        // Roll back rather than leave every hotkey dead.
         let mut p = load_prefs();
         match previous {
             Some(prev) => p[key] = serde_json::json!(prev),
             None => {
-                p.as_object_mut().map(|o| o.remove(key));
+                p.as_object_mut().map(|object| object.remove(key));
             }
         }
-        let _ = std::fs::write(
-            prefs_file(),
-            serde_json::to_string_pretty(&p).unwrap_or_default(),
-        );
+        let _ = write_json_atomic(&prefs_file(), &p);
         let _ = register_hotkeys(&app);
         structured_log(
             "hotkey-save-failed",
-            serde_json::json!({ "slot": slot, "code": "registration-failed" }),
+            serde_json::json!({ "slot": slot.name(), "code": "registration-failed" }),
         );
         return Err(e);
     }
     structured_log(
         "hotkey-saved",
-        serde_json::json!({ "slot": slot, "kind": "registered-shortcut" }),
+        serde_json::json!({ "slot": slot.name(), "kind": capture.kind }),
     );
-    Ok(accelerator)
+    Ok(capture)
 }
 
 // ── signals ──────────────────────────────────────────────────────────────────
@@ -2199,6 +2472,37 @@ fn install_signal_handlers(_app: AppHandle) {}
 #[cfg(test)]
 mod live_dictation_tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_window_joins_other_apps_spaces_without_entering_window_cycle() {
+        use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
+
+        let behavior = status_window_collection_behavior();
+        assert!(behavior.contains(Behavior::CanJoinAllSpaces));
+        assert!(behavior.contains(Behavior::CanJoinAllApplications));
+        assert!(behavior.contains(Behavior::FullScreenAuxiliary));
+        assert!(behavior.contains(Behavior::Stationary));
+        assert!(behavior.contains(Behavior::IgnoresCycle));
+        assert!(!behavior.contains(Behavior::Transient));
+        assert!(!behavior.contains(Behavior::ParticipatesInCycle));
+        assert_eq!(
+            status_window_level(),
+            objc2_app_kit::NSScreenSaverWindowLevel
+        );
+        let style = status_window_style_mask();
+        assert!(style.contains(objc2_app_kit::NSWindowStyleMask::Borderless));
+        assert!(style.contains(objc2_app_kit::NSWindowStyleMask::NonactivatingPanel));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_window_is_reasserted_only_when_requested_and_off_space() {
+        assert!(status_window_needs_reassertion(true, true, false));
+        assert!(status_window_needs_reassertion(true, false, true));
+        assert!(!status_window_needs_reassertion(true, true, true));
+        assert!(!status_window_needs_reassertion(false, false, false));
+    }
 
     #[test]
     fn appending_only_inserts_new_suffix() {
@@ -2255,19 +2559,24 @@ mod live_dictation_tests {
     }
 
     #[test]
-    fn mac_modifier_recorder_accepts_required_gestures_in_any_order() {
-        assert!(fixed_macos_modifier_gesture("read", "Control+Command"));
-        assert!(fixed_macos_modifier_gesture("read", "Command+Control"));
-        assert!(fixed_macos_modifier_gesture("dictate", "Shift+Command"));
-        assert!(fixed_macos_modifier_gesture("dictate", "Command+Shift"));
-        assert!(!fixed_macos_modifier_gesture("dictate", "Control+Command"));
-    }
-
-    #[test]
-    fn modifier_only_detection_does_not_reject_real_shortcuts() {
-        assert!(modifier_only("Shift+Command"));
-        assert!(!modifier_only("Control+Alt+KeyW"));
-        assert!(!modifier_only("F7"));
+    fn snip_outcomes_distinguish_cancel_permission_ocr_and_success() {
+        assert_eq!(snip_result_code(false, "CANCELLED", ""), Some("cancelled"));
+        assert_eq!(
+            snip_result_code(false, "CANCELLED", "could not create image"),
+            Some("capture-failed")
+        );
+        assert_eq!(
+            snip_result_code(false, "ERROR no text found in that region", ""),
+            Some("no-text")
+        );
+        assert_eq!(
+            snip_result_code(false, "", "Vision failed"),
+            Some("ocr-failed")
+        );
+        assert_eq!(
+            snip_result_code(true, "recognized words", "OCR timing"),
+            None
+        );
     }
 
     #[test]
@@ -2286,6 +2595,18 @@ mod live_dictation_tests {
             &text_backend::ApplyOutcome::Applied,
         ));
         assert_eq!(inserted, "complete final message");
+    }
+
+    #[test]
+    fn final_transcript_without_verified_insertion_stays_clipboard_fallback() {
+        assert_eq!(
+            successful_dictation_status(true),
+            DictationStatus::Completed
+        );
+        assert_eq!(
+            successful_dictation_status(false),
+            DictationStatus::ClipboardFallback
+        );
     }
 }
 
@@ -2342,7 +2663,6 @@ pub fn run() {
             let handle = app.handle().clone();
             app.manage(Engine(Mutex::new(None)));
             app.manage(Dictation(Mutex::new(None)));
-
             // Kokoro is an accessibility tool whose hotkeys must be available
             // immediately after login. Default autostart on and self-heal a
             // missing LaunchAgent unless the user explicitly disabled it.
@@ -2372,15 +2692,46 @@ pub fn run() {
             }
             install_signal_handlers(handle.clone());
             start_watchdog(handle.clone());
-            if let Err(e) = register_hotkeys(&handle) {
-                eprintln!("{e}");
+            #[cfg(target_os = "macos")]
+            start_status_space_watcher(handle.clone());
+            if let Err(error) = register_hotkeys(&handle) {
+                let permission_required = error.contains("Input Monitoring");
+                structured_log(
+                    "hotkeys-registration-failed",
+                    serde_json::json!({
+                        "code": if permission_required {
+                            "input-monitoring-required"
+                        } else {
+                            "registration-failed"
+                        }
+                    }),
+                );
+                eprintln!("{error}");
+                show_player_notice(
+                    &handle,
+                    if permission_required {
+                        "Enable Kokoro Voice 2.1 in Input Monitoring"
+                    } else {
+                        "Kokoro shortcuts could not start"
+                    },
+                );
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
 
             let read = MenuItem::with_id(app, "read", "Read selection", true, None::<&str>)?;
             let snip = MenuItem::with_id(app, "snip", "Snip & read", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "Settings…", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Kokoro Voice", true, None::<&str>)?;
+            let quit = MenuItem::with_id(
+                app,
+                "quit",
+                format!("Quit {}", variant::DISPLAY_NAME),
+                true,
+                None::<&str>,
+            )?;
             let menu = Menu::with_items(app, &[&read, &snip, &stop, &open, &quit])?;
 
             TrayIconBuilder::new()
@@ -2414,7 +2765,7 @@ pub fn run() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building Kokoro Voice")
+        .expect("error while building Kokoro Voice 2.1")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 stop_engine(app);

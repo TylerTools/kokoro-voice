@@ -1,4 +1,8 @@
-"""One-time Windows CPU STT benchmark used by first-run setup."""
+"""Developer/setup benchmark for selecting the Windows CPU STT compute type.
+
+This is a measurement tool, not a runtime entrypoint. The desktop setup invokes
+it explicitly and consumes only the JSON file named by ``--output``.
+"""
 
 import argparse
 import json
