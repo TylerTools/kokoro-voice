@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Debug)]
 pub struct TargetSnapshot {
     pub target_id: String,
@@ -18,12 +19,18 @@ pub struct TargetSnapshot {
     projection: TextProjection,
 }
 
+#[cfg(not(any(target_os = "macos", test)))]
+#[derive(Clone, Debug)]
+pub struct TargetSnapshot;
+
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TextProjection {
     Stable,
     Chromium,
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProjectionMatch {
     owned_start: usize,
@@ -56,6 +63,7 @@ fn char_slice(text: &str, start: usize, len: usize) -> Option<String> {
     (start + len <= chars.len()).then(|| chars[start..start + len].iter().collect())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn expected_value(target: &TargetSnapshot, inserted: &str) -> String {
     let chars: Vec<char> = target.baseline.chars().collect();
     let mut out: String = chars[..target.start].iter().collect();
@@ -64,6 +72,7 @@ fn expected_value(target: &TargetSnapshot, inserted: &str) -> String {
     out
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn canonical_browser_context(text: &[char], trim_leading: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut previous_was_cr = false;
@@ -99,6 +108,7 @@ fn canonical_browser_context(text: &[char], trim_leading: bool) -> String {
 /// normalize CR/LF, or expose a DOM space as NBSP after an input event. Match
 /// the exact owned text at the caret and permit only those representation
 /// changes in the unowned context. Any actual text or caret edit still fails.
+#[cfg(any(target_os = "macos", test))]
 fn match_projection(
     target: &TargetSnapshot,
     current: &str,
@@ -137,6 +147,7 @@ fn match_projection(
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn rebase_projection(
     target: &mut TargetSnapshot,
     current: &str,
@@ -159,10 +170,12 @@ fn rebase_projection(
     target.start = observation.owned_start;
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn scope_compatible(original: Option<&str>, current: Option<&str>) -> bool {
     original.is_none_or(|expected| current == Some(expected))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn can_rebind_target(
     same_process: bool,
     same_scope: bool,
@@ -177,6 +190,7 @@ fn can_rebind_target(
 /// synthetic newline.  The description is placeholder text, not user text.
 /// Treating it as the baseline makes the first injected preview look like an
 /// unowned edit as soon as the placeholder disappears.
+#[cfg(any(target_os = "macos", test))]
 fn normalize_empty_placeholder(
     value: String,
     description: Option<&str>,
@@ -206,6 +220,7 @@ fn normalize_empty_placeholder(
 /// zero-length caret, but return CFNull for AXValue while the editor is empty.
 /// Accept only that exact empty-editor shape. Treating any other missing value
 /// as empty would discard the baseline that protects user-owned text.
+#[cfg(any(target_os = "macos", test))]
 fn normalize_missing_editable_value(
     value: Option<String>,
     role: &str,
@@ -220,6 +235,7 @@ fn normalize_missing_editable_value(
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_chromium_projection(bundle_id: &str) -> bool {
     matches!(
         bundle_id,
@@ -550,7 +566,7 @@ mod platform {
                     return Err(ApplyOutcome::SecureField);
                 }
             }
-            Err(ApplyOutcome::Unavailable)
+            Err(ApplyOutcome::ClipboardFallback("clipboard-only".into()))
         }
 
         fn apply_revision(

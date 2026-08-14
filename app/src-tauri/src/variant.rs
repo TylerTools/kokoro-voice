@@ -6,6 +6,7 @@
 
 pub const DISPLAY_NAME: &str = "Kokoro Voice 2.1";
 pub const APP_SUPPORT_DIR: &str = "Kokoro Voice 2.1";
+#[cfg(target_os = "macos")]
 pub const CONFIG_DIR_NAME: &str = "kokoro-voice-2-1";
 pub const DEFAULT_PORT: &str = "8125";
 pub const CLIENT_HOST: &str = "127.0.0.1:8125";
