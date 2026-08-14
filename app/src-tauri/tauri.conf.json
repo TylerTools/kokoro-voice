@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Kokoro Voice",
-  "version": "0.1.0",
-  "identifier": "com.tylertools.kokoro-voice",
+  "productName": "Kokoro Voice 2.1",
+  "version": "2.1.0-beta.1",
+  "identifier": "com.tylertools.kokoro-voice-2-1",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -15,7 +15,7 @@
       {
         "label": "main",
         "url": "index.html",
-        "title": "Kokoro Voice",
+        "title": "Kokoro Voice 2.1",
         "width": 620,
         "height": 780,
         "resizable": true,
@@ -25,8 +25,8 @@
         "label": "player",
         "url": "player.html",
         "title": "Playing",
-        "width": 140,
-        "height": 42,
+        "width": 152,
+        "height": 50,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -34,24 +34,19 @@
         "skipTaskbar": true,
         "visible": false,
         "shadow": false,
-        "focus": false
+        "focus": false,
+        "focusable": false,
+        "visibleOnAllWorkspaces": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8125; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
     },
-    "macOSPrivateApi": false,
-    "trayIcon": {
-      "iconPath": "icons/32x32.png",
-      "iconAsTemplate": true
-    }
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "app",
-      "dmg"
-    ],
+    "targets": "all",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -60,11 +55,18 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "13.0",
-      "signingIdentity": "-"
+      "minimumSystemVersion": "13.0"
     },
     "resources": {
-      "engine-src": "engine-src"
+      "../../server.py": "engine-src/server.py",
+      "../../stt_config.py": "engine-src/stt_config.py",
+      "../../benchmark_stt.py": "engine-src/benchmark_stt.py",
+      "../../requirements.txt": "engine-src/requirements.txt",
+      "../../requirements-macos.txt": "engine-src/requirements-macos.txt",
+      "../../requirements-windows.txt": "engine-src/requirements-windows.txt",
+      "../../requirements-macos.lock": "engine-src/requirements-macos.lock",
+      "../../requirements-windows.lock": "engine-src/requirements-windows.lock",
+      "../../client/*.py": "engine-src/client/"
     }
   }
 }

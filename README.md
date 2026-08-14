@@ -33,39 +33,52 @@ One local HTTP service owns the models. Thin per-platform clients talk to it.
 Splitting it this way means the models load once and stay warm, the clients stay
 tiny, and both platforms share one HTTP contract.
 
+Developer and agent documentation:
+
+- [Architecture and runtime contracts](ARCHITECTURE.md)
+- [Repository code map and change rules](AGENTS.md)
+- [Desktop host development guide](app/README.md)
+
 - **`server.py`** — the service. Owns both models.
 - **`client/speak.py`** — read-aloud client. **Standard library only**, so it
   runs on a stock Python with nothing installed.
 - **`client/dictate.py`** — dictation client. Needs `sounddevice`/`soundfile`.
 - **`client/snip.py`** — screen-snip OCR. Uses the OS OCR engine, not a model.
-- **`hosts/<platform>/`** — desktop integration: hotkeys, mini player, tray.
+- **`app/`** — the authoritative Tauri desktop host: lifecycle, hotkeys, UI,
+  permissions, target-safe insertion, and tray.
+- **`hosts/macos/`** — superseded Hammerspoon host retained as implementation
+  history; it is not part of the supported install.
 
 ## Requirements
 
-- Python 3.12+ (the installer fetches it via [uv](https://docs.astral.sh/uv/) if missing)
 - macOS on Apple silicon, or Windows — see [Platform support](#platform-support)
-- ~1.3 GB disk: ~500 MB models, ~750 MB environment
+- Up to ~3 GB disk for the private runtime and pinned local models
 
 ## Install
 
-```sh
-git clone https://github.com/TylerTools/kokoro-voice
-cd kokoro-voice
-./install.sh          # macOS / Linux
-```
+For macOS on Apple silicon, download
+[Kokoro Voice 2.1](https://github.com/TylerTools/kokoro-voice/releases/tag/v2.1.0-beta.1)
+from the GitHub release. The desktop app installs its private runtime and
+verified models on first launch; no system Python is required.
+
+This beta is ad-hoc signed for local use rather than notarized with an Apple
+Developer ID, so macOS may require first-launch confirmation in Privacy &
+Security. A verified Windows 2.1 installer is not included in this release.
 
 ```powershell
 .\install.ps1         # Windows
 ```
 
-The installer creates the environment, downloads the models, generates an auth
-token, installs the service to start at login, and verifies it end to end. It is
-idempotent — safe to re-run.
+`install.ps1` is a signed-release bootstrap for Windows. It refuses installers
+whose Authenticode signature is not valid.
+
+`install.sh` is a legacy/manual service-only installer. Do not run it on a Mac
+that uses Kokoro Voice.app: it creates a second engine owner and port conflict.
 
 Then check it:
 
 ```sh
-curl localhost:8123/health
+curl localhost:8125/health
 # {"status":"ok","voices":54,"auth_required":true,"stt_ready":true}
 ```
 
@@ -75,15 +88,20 @@ curl localhost:8123/health
 *new* selection to switch to it; press with nothing newly selected to pause.
 
 **Dictate** — hold the dictation key, speak, release. The text is typed into
-whatever has focus, and also placed on the clipboard as a fallback (restored
-after 45 seconds so transcripts don't linger).
+whatever has focus, and also placed on the clipboard as a fallback.
+
+Live editing is target-locked on macOS: before every revision the app verifies
+the original accessible control, caret, and text it owns. Focus changes, manual
+edits, unsupported controls, and failed verification permanently switch that
+session to clipboard fallback. Secure fields are rejected before recording.
+Windows uses clipboard-only dictation until its UI Automation range adapter has
+passed the same ownership tests.
 
 **Snip and read** — press the snip key, drag a box around anything on screen,
 and it is OCR'd and read aloud. This is for text you *cannot* select: images,
 PDFs in a viewer, video frames, remote desktops, screenshots someone sent you.
-OCR uses Apple's Vision framework, which ships with the OS — nothing is
-downloaded and nothing leaves the machine. The capture is deleted as soon as the
-text is extracted.
+OCR uses Apple Vision on macOS and Windows.Media.Ocr on Windows — nothing is
+uploaded. The capture is deleted as soon as the text is extracted.
 
 Requires the **Screen Recording** permission for whichever app triggers it.
 Without it `screencapture` fails with "could not create image from display".
@@ -96,7 +114,8 @@ python3 client/speak.py --clipboard       # speak the clipboard
 python3 client/speak.py --stop            # stop playback
 python3 client/speak.py --voices          # list all 54 voices
 
-python3 client/dictate.py --record        # record until --stop, print transcript
+python3 client/dictate.py --record --session manual-test  # low-level protocol test
+python3 client/dictate.py --stop --session manual-test    # stop that exact test
 python3 client/dictate.py --devices       # list input devices
 
 python3 client/snip.py                    # select a region, print the text
@@ -205,7 +224,7 @@ playing must reach the producer too.
 | | Status |
 |---|---|
 | **macOS** (Apple silicon) | Complete — service, hotkeys, mini player, dictation, snip OCR |
-| **Windows** | Service and clients port directly; host integration in progress. OCR maps to the built-in `Windows.Media.Ocr`, also on-device. See [PORTING-WINDOWS.md](PORTING-WINDOWS.md) |
+| **Windows x64** | Desktop host, registered hotkeys, CPU/NVIDIA STT fallback, dictation, and Windows.Media.Ocr implementation; release requires the Windows CI and physical checklist to pass |
 | **Linux** | Clients work; no host integration |
 
 The service and both clients are portable. What is platform-specific is the

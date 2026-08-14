@@ -1,4 +1,9 @@
-# macOS host
+# Legacy macOS Hammerspoon host
+
+> **Status: superseded.** The supported macOS product is the Tauri app under
+> `app/`. Do not install or modify this host for current Kokoro Voice work, and
+> never run it beside the app. This directory remains only for measured design
+> history and explicit legacy-maintenance tasks.
 
 Global hotkeys, the floating mini player, and dictation-into-the-focused-app.
 Built on [Hammerspoon](https://www.hammerspoon.org/), which gives us a scripting

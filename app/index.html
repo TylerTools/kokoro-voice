@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Kokoro Voice</title>
+    <title>Kokoro Voice 2.1</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
     <header>
       <div class="brand">
-        <h1>Kokoro Voice</h1>
+        <h1>Kokoro Voice 2.1</h1>
         <p class="sub">Read aloud, dictation, and screen OCR — all on this machine.</p>
       </div>
       <div id="status" class="status status--unknown">
@@ -20,19 +20,27 @@
     <section id="setup" class="card setup" hidden>
       <h3>One-time setup</h3>
       <p id="setup-intro">
-        Kokoro Voice needs to download its voices and speech recognition before
-        first use — about 500&nbsp;MB. It only happens once, and everything is
+        Kokoro Voice 2.1 needs to download its voices and speech recognition before
+        first use — up to about 2&nbsp;GB depending on platform. It only happens once, and everything is
         stored on this computer.
       </p>
       <div class="bar" hidden id="bar-wrap"><div class="bar-fill" id="bar"></div></div>
       <p class="setup-msg" id="setup-msg"></p>
       <button id="setup-go">Download &amp; install</button>
+      <button class="ghost" id="setup-cancel" hidden>Cancel</button>
     </section>
 
     <section class="card private">
       <strong>Nothing leaves this computer.</strong>
       The voices and the speech recognition run locally. There is no account and
       no API key, and once installed the engine makes no network calls at all.
+    </section>
+
+    <section class="card" id="dictation-test-card">
+      <h3>Test dictation</h3>
+      <p>Click below, hold your dictation shortcut, speak, and release. A successful test enables live typing.</p>
+      <textarea id="dictation-test" rows="3" placeholder="Your test dictation will appear here"></textarea>
+      <small id="dictation-test-status">Live typing remains off until this test succeeds.</small>
     </section>
 
     <h2>What it does</h2>
@@ -60,8 +68,8 @@
       </div>
       <p>
         Hold the key, speak, then let go. What you said is typed into whatever
-        you were working in, and also copied to the clipboard as a backup — that
-        copy is cleared again after 45 seconds so it doesn't linger.
+         you were working in, and also copied to the clipboard as a backup — that
+         way it is recoverable if the focused app rejects synthetic typing.
       </p>
       <p class="perm">Needs <strong>Microphone</strong> permission.</p>
     </section>
@@ -86,6 +94,10 @@
     <h2>Voice &amp; speed</h2>
     <section class="card">
       <label class="field">
+        <span>Microphone</span>
+        <select id="microphone"><option value="">System default</option></select>
+      </label>
+      <label class="field">
         <span>Voice</span>
         <select id="voice"></select>
       </label>
@@ -93,6 +105,24 @@
       <label class="field">
         <span>Speed</span>
         <div class="chips" id="speeds"></div>
+      </label>
+
+      <label class="field">
+        <span><input id="cue-enabled" type="checkbox" /> Dictation sound cues</span>
+        <div class="row">
+          <input id="cue-volume" type="range" min="0" max="100" step="1" aria-label="Sound cue volume" />
+          <output id="cue-volume-label" for="cue-volume">22%</output>
+        </div>
+      </label>
+
+      <label class="field">
+        <span><input id="live-preview" type="checkbox" /> Type dictation live</span>
+        <small>Partial text may revise while speaking; only the final transcript is inserted.</small>
+      </label>
+
+      <label class="field">
+        <span><input id="launch-at-login" type="checkbox" /> Launch at login</span>
+        <small>Keep the hotkeys ready after signing in.</small>
       </label>
 
       <div class="row">
@@ -111,14 +141,25 @@
       </p>
       <ul class="perms">
         <li><strong>Accessibility</strong> — read the selected text, type dictation</li>
+        <li><strong>Input Monitoring</strong> — receive global shortcuts</li>
         <li><strong>Microphone</strong> — dictation</li>
         <li><strong>Screen Recording</strong> — snip &amp; read</li>
       </ul>
-      <button class="ghost" id="open-privacy">Open Privacy &amp; Security</button>
+      <button class="ghost" id="open-accessibility">Open Accessibility</button>
+      <button class="ghost" id="open-input-monitoring">Open Input Monitoring</button>
+      <button class="ghost" id="run-system-check">Run system check</button>
+    </section>
+
+    <h2>Storage</h2>
+    <section class="card">
+      <p id="storage-detail">Checking local data…</p>
+      <label><input type="checkbox" id="remove-preferences" /> Also remove preferences and hotkeys</label>
+      <button class="ghost" id="remove-local-data">Remove downloaded models and runtime</button>
     </section>
 
     <footer>
       <span id="detail">—</span>
+      <button class="ghost" id="export-diagnostics">Export diagnostics</button>
       <a href="https://github.com/TylerTools/kokoro-voice" target="_blank" rel="noreferrer">Source</a>
     </footer>
 

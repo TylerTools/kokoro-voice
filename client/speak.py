@@ -41,20 +41,20 @@ import urllib.request
 # Loopback default, matching the service's 127.0.0.1 bind. When the Windows
 # client lands, point THAT client at the service machine via KOKORO_HOST and give
 # the service the same address — don't reopen it to 0.0.0.0.
-HOST = os.environ.get("KOKORO_HOST", "127.0.0.1:8123")
+HOST = os.environ.get("KOKORO_HOST", "127.0.0.1:8125")
 
 
 def _load_token() -> str | None:
     """Env first, then the shared 0600 token file the server reads.
 
-    The file exists so the hotkey paths (Hammerspoon, Automator) don't each
+    The file exists so desktop and explicit legacy launch paths do not each
     need the secret plumbed into their environment.
     """
     tok = (os.environ.get("KOKORO_TOKEN") or "").strip()
     if tok:
         return tok
     path = os.environ.get(
-        "KOKORO_TOKEN_FILE", os.path.expanduser("~/.config/kokoro/token")
+        "KOKORO_TOKEN_FILE", os.path.expanduser("~/.config/kokoro-voice-2-1/token")
     )
     try:
         with open(path) as fh:
@@ -106,7 +106,7 @@ def _state_dir() -> str:
             who = str(os.getuid())
         except AttributeError:  # Windows
             who = os.environ.get("USERNAME", "user")
-        base = os.path.join(tempfile.gettempdir(), f"kokoro-{who}")
+        base = os.path.join(tempfile.gettempdir(), f"kokoro-voice-2-1-{who}")
 
     os.makedirs(base, mode=0o700, exist_ok=True)
     # makedirs(exist_ok=True) accepts a pre-existing dir whatever its owner or
@@ -257,7 +257,7 @@ def stop_playback() -> None:
         if pid == os.getpid():
             continue
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, signal.SIGTERM if IS_WIN else signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
 
@@ -282,6 +282,8 @@ def is_paused() -> bool:
     pid = _player_pid()
     if not pid:
         return False
+    if IS_WIN:
+        return False
     out = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
                          capture_output=True, text=True).stdout.strip()
     return out.startswith("T")
@@ -291,6 +293,8 @@ def pause_playback() -> bool:
     """SIGSTOP the player — a real pause; audio resumes exactly where it left off."""
     pid = _player_pid()
     if not pid:
+        return False
+    if IS_WIN:
         return False
     try:
         os.kill(pid, signal.SIGSTOP)
@@ -303,6 +307,8 @@ def resume_playback() -> bool:
     pid = _player_pid()
     if not pid:
         return False
+    if IS_WIN:
+        return False
     try:
         os.kill(pid, signal.SIGCONT)
         return True
@@ -314,20 +320,20 @@ def toggle_playback() -> str:
     if not _player_pid():
         return "idle"
     if is_paused():
-        resume_playback()
-        return "playing"
-    pause_playback()
-    return "paused"
+        return "playing" if resume_playback() else "paused"
+    return "paused" if pause_playback() else "playing"
 
 
 def _play_file(path: str) -> None:
-    if IS_MAC:
-        proc = subprocess.Popen(["afplay", path])
-    elif IS_WIN:
-        proc = subprocess.Popen([
-            "powershell", "-NoProfile", "-Command",
-            f"(New-Object Media.SoundPlayer '{path}').PlaySync()",
-        ])
+    if IS_MAC or IS_WIN:
+        # Keep playback in this long-running process; spawning PowerShell for
+        # every chunk (or afplay on macOS) creates audible dead air.
+        import sounddevice as sd
+        import soundfile as sf
+        samples, sample_rate = sf.read(path, dtype="float32")
+        _write_state(os.getpid())
+        sd.play(samples, sample_rate, blocking=True)
+        return
     else:
         proc = subprocess.Popen(["aplay", path])
     _write_state(proc.pid)
@@ -335,22 +341,19 @@ def _play_file(path: str) -> None:
 
 
 def notify(message: str) -> None:
-    sys.stderr.write(message + "\n")
-    if IS_MAC:
-        subprocess.run(
-            ["osascript", "-e",
-             f'display notification {json.dumps(message)} with title "Kokoro TTS"'],
-            capture_output=True,
-        )
+    # The desktop host renders this inside its own status pill. Avoid macOS
+    # notifications, which expose the Python/AppleScript implementation and
+    # visually detach the failure from the control that triggered it.
+    print(f"NOTICE {message}", flush=True)
 
 
 def emit_paths(text: str, voice: str | None, speed: float) -> int:
-    """Synthesize chunks and print each WAV path as it becomes ready.
+    """Legacy-host adapter: print each synthesized WAV path as it becomes ready.
 
-    Used by the Hammerspoon front-end, which plays the clips IN-PROCESS via
-    hs.sound. That matters: spawning `afplay` per chunk costs ~0.93s each
-    (measured), while in-process playback costs ~0.21s and can be eliminated
-    entirely by preloading the next clip while the current one plays.
+    Retained for the explicitly legacy Hammerspoon host. The supported Tauri
+    app does not call this mode. Hammerspoon plays clips in-process because
+    spawning `afplay` per chunk costs ~0.93s each (measured), while in-process
+    playback costs ~0.21s and can be hidden by preloading the next clip.
 
     The caller owns the files and is responsible for deleting them.
     """

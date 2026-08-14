@@ -9,7 +9,7 @@ desktops, screenshots someone sent you.
     snip.py --speak         select a region, read it aloud
     snip.py --file shot.png OCR an existing image instead of capturing
 
-macOS only for now. Uses the Vision framework, which ships with the OS — the
+Uses Apple Vision on macOS and Windows.Media.Ocr on Windows. Both ship with the OS; the
 OCR is on-device, needs no model download, and makes no network calls, so the
 fully-local guarantee holds. Measured on a 1000x340 text image: 341ms at
 `accurate` with confidence 1.00, 22ms at `fast` for identical output.
@@ -29,6 +29,7 @@ import tempfile
 import time
 
 IS_MAC = sys.platform == "darwin"
+IS_WIN = sys.platform == "win32"
 
 
 def _state_dir() -> str:
@@ -46,7 +47,7 @@ def _state_dir() -> str:
             who = str(os.getuid())
         except AttributeError:  # Windows
             who = os.environ.get("USERNAME", "user")
-        base = os.path.join(tempfile.gettempdir(), f"kokoro-{who}")
+        base = os.path.join(tempfile.gettempdir(), f"kokoro-voice-2-1-{who}")
     os.makedirs(base, mode=0o700, exist_ok=True)
     if hasattr(os, "getuid"):
         st = os.lstat(base)
@@ -62,12 +63,68 @@ def capture_region(path: str) -> bool:
     -i interactive, -x silent (no shutter sound). screencapture simply writes
     no file when you press Escape, which is how cancellation is detected.
     """
-    subprocess.run(["screencapture", "-i", "-x", path], check=False)
+    if IS_MAC:
+        subprocess.run(["screencapture", "-i", "-x", path], check=False)
+    elif IS_WIN:
+        script = r'''
+Add-Type -AssemblyName System.Windows.Forms
+[Windows.Forms.Clipboard]::Clear()
+Start-Process 'ms-screenclip:'
+$deadline = (Get-Date).AddSeconds(120)
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 200
+  if ([Windows.Forms.Clipboard]::ContainsImage()) {
+    $image = [Windows.Forms.Clipboard]::GetImage()
+    $image.Save($env:KOKORO_SNIP_PATH, [Drawing.Imaging.ImageFormat]::Png)
+    exit 0
+  }
+}
+exit 1
+'''
+        env = os.environ.copy()
+        env["KOKORO_SNIP_PATH"] = os.path.abspath(path)
+        subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", script], env=env, check=False)
+    else:
+        return False
     return os.path.exists(path) and os.path.getsize(path) > 0
 
 
 def ocr_image(path: str, accurate: bool = True, languages=("en-US",)) -> str:
     """Run Vision OCR and return the text in reading order."""
+    if IS_WIN:
+        script = r'''
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+function Await-Result($operation, [Type]$resultType) {
+  $method = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+    Where-Object { $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 } |
+    Select-Object -First 1
+  $task = $method.MakeGenericMethod($resultType).Invoke($null, @($operation))
+  $task.Wait()
+  return $task.Result
+}
+[Windows.Storage.StorageFile, Windows.Storage, ContentType=WindowsRuntime] | Out-Null
+[Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime] | Out-Null
+[Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime] | Out-Null
+$file = Await-Result ([Windows.Storage.StorageFile]::GetFileFromPathAsync($env:KOKORO_OCR_PATH)) ([Windows.Storage.StorageFile])
+$stream = Await-Result ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
+$decoder = Await-Result ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bitmap = Await-Result ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if ($null -eq $engine) { throw 'No Windows OCR language is installed.' }
+$result = Await-Result ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$result.Text
+'''
+        env = os.environ.copy()
+        env["KOKORO_OCR_PATH"] = os.path.abspath(path)
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", script],
+            env=env, capture_output=True, text=True,
+        )
+        if out.returncode != 0:
+            raise RuntimeError(out.stderr.strip() or "Windows OCR failed")
+        return out.stdout.strip()
+
     import Quartz
     import Vision
     from Foundation import NSURL
@@ -135,8 +192,8 @@ def main() -> int:
     ap.add_argument("--lang", default="en-US", help="recognition language(s), comma separated")
     args = ap.parse_args()
 
-    if not IS_MAC and not args.file:
-        print("ERROR screen capture is macOS-only for now", file=sys.stderr)
+    if not (IS_MAC or IS_WIN) and not args.file:
+        print("ERROR screen capture is unsupported on this platform", file=sys.stderr)
         return 2
 
     path, temporary = args.file, False

@@ -13,17 +13,17 @@
       it look like a code bug rather than a missing declaration.
     -->
     <key>NSMicrophoneUsageDescription</key>
-    <string>Kokoro Voice records your voice so it can be transcribed to text. Audio is processed on this computer and is never uploaded or saved.</string>
+    <string>Kokoro Voice 2.1 records your voice so it can be transcribed to text. Audio is processed on this computer and is never uploaded or saved.</string>
 
     <!-- Typing a transcript into the focused app, and reading your selection,
          both go through System Events. -->
     <key>NSAppleEventsUsageDescription</key>
-    <string>Kokoro Voice types dictated text into the app you are working in, and reads the text you have selected.</string>
+    <string>Kokoro Voice 2.1 types dictated text into the app you are working in, and reads the text you have selected.</string>
 
     <!-- Snip and read captures a region of the screen, OCRs it locally, and
          deletes the capture immediately. -->
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Kokoro Voice captures the area you select so the text in it can be read aloud. The capture is deleted as soon as the text is extracted.</string>
+    <string>Kokoro Voice 2.1 captures the area you select so the text in it can be read aloud. The capture is deleted as soon as the text is extracted.</string>
 
     <!-- Menu-bar utility: no Dock icon. The settings window is opened from the
          tray, so a Dock tile would imply a main window that does not exist. -->
