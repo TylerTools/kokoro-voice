@@ -129,10 +129,14 @@ Environment variables, all optional:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KOKORO_HOST` | `127.0.0.1:8123` | Where the client looks for the service |
+| `KOKORO_HOST` | `127.0.0.1:8125` | Where the supported 2.1 client looks for the service |
 | `KOKORO_VOICE` | `af_heart` | Default voice |
 | `KOKORO_LANG` | `en-us` | Default language |
 | `KOKORO_MAX_CHARS` | `20000` | Reject longer text |
+| `KOKORO_TTS_WORKER_RETIRE_CHARS` | `2000` | Recycle TTS after this much cumulative read-aloud text; `0` keeps it warm |
+| `KOKORO_STT_BASE_IDLE_SECONDS` | `90` | Idle lease after a cold transcription |
+| `KOKORO_STT_REPEAT_IDLE_SECONDS` | `180` | Extended lease after a warm repeat in the same dictation burst |
+| `KOKORO_STT_IDLE_SECONDS` | — | Legacy override for both leases; `0` keeps STT warm indefinitely |
 | `KOKORO_TOKEN` | — | Auth token; normally read from the token file instead |
 | `WHISPER_REPO` | `mlx-community/whisper-large-v3-turbo` | STT model |
 | `WHISPER_LANG` | `en` | Transcription language |
@@ -141,8 +145,9 @@ Environment variables, all optional:
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| `GET` | `/health` | — | status, voice count, `stt_ready` |
+| `GET` | `/health` | — | status, voice count, TTS/STT residency and readiness |
 | `GET` | `/voices` | — | all voice names |
+| `POST` | `/tts/retire` | `{}` | release a partially used TTS worker after cancellation |
 | `POST` | `/speak` | `{"text", "voice", "speed", "lang"}` | `audio/wav` |
 | `POST` | `/transcribe` | raw WAV bytes | `{"text", "audio_seconds", ...}` |
 
@@ -167,8 +172,10 @@ The defaults are deliberately closed:
 - **Nothing sensitive is logged.** Transcripts and spoken text never reach the
   logs — only character counts, durations, and a chars-per-second rate used to
   flag anomalies.
-- Dictation audio is held in memory and posted to the service. It is never
-  written to disk.
+- Dictation audio is held in memory and posted to the service; it is not saved
+  as a recording. Read-aloud uses private temporary WAV chunks, removes them on
+  completion/cancellation, and scavenges only aged, exact app-owned filenames
+  after an abnormal exit without touching exports or unknown files.
 
 ## Measured performance
 

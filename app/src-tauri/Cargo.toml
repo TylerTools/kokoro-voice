@@ -1,6 +1,6 @@
 [package]
 name = "kokoro-voice-2-1"
-version = "2.1.0-beta.1"
+version = "2.1.1-beta.3"
 description = "Isolated next-generation build of Kokoro Voice"
 authors = ["TYLERtools.net"]
 edition = "2021"

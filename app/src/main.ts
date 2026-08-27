@@ -14,6 +14,7 @@ type Health = {
   status: string;
   voices?: number;
   stt_ready?: boolean;
+  stt_warm?: boolean;
   auth_required?: boolean;
 };
 
@@ -43,9 +44,8 @@ const detail = document.getElementById("detail") as HTMLSpanElement;
 /**
  * Poll the engine and describe it in plain language.
  *
- * The engine takes a few seconds to warm the speech model after launch, so
- * "starting" is a real, expected state rather than an error — saying "down"
- * during normal startup would train people to ignore the indicator.
+ * TTS readiness gates startup. STT may intentionally be cold because its
+ * memory is reclaimed after inactivity; cold is ready on demand, not degraded.
  */
 async function refresh(): Promise<void> {
   let h: Health;
@@ -71,11 +71,13 @@ async function refresh(): Promise<void> {
   if (h.status === "ok" && h.stt_ready) {
     statusEl.classList.add("status--ok");
     statusText.textContent = "Ready";
-    detail.textContent = `${h.voices ?? 0} voices · speech recognition ready`;
+    detail.textContent = h.stt_warm
+      ? `${h.voices ?? 0} voices · speech recognition ready`
+      : `${h.voices ?? 0} voices · speech recognition ready on demand`;
   } else if (h.status === "ok") {
     statusEl.classList.add("status--warn");
-    statusText.textContent = "Almost ready";
-    detail.textContent = "Reading works now; speech recognition is still warming up.";
+    statusText.textContent = "Dictation needs attention";
+    detail.textContent = "Reading works; speech recognition will retry on the next dictation.";
   } else if (h.status === "starting") {
     statusEl.classList.add("status--warn");
     statusText.textContent = "Starting…";
@@ -150,9 +152,21 @@ document.getElementById("run-system-check")?.addEventListener("click", async (ev
   }
 });
 
-invoke<{ engine_bytes: number }>("storage_status").then((storage) => {
+invoke<{
+  engine_bytes: number;
+  config_bytes: number;
+  legacy_runtime_bytes: number;
+  shared_stt_cache_bytes: number;
+}>("storage_status").then((storage) => {
   const el = document.getElementById("storage-detail");
-  if (el) el.textContent = `${(storage.engine_bytes / 1_000_000_000).toFixed(2)} GB of downloaded local data`;
+  if (el) {
+    const owned = (storage.engine_bytes + storage.config_bytes) / 1_000_000_000;
+    const shared = storage.shared_stt_cache_bytes / 1_000_000_000;
+    const legacy = storage.legacy_runtime_bytes / 1_000_000;
+    el.textContent = `${owned.toFixed(2)} GB app data + ${shared.toFixed(2)} GB shared speech model${
+      legacy > 0 ? `; ${legacy.toFixed(1)} MB legacy temporary audio` : ""
+    }`;
+  }
 });
 
 document.getElementById("remove-local-data")?.addEventListener("click", async () => {
@@ -501,4 +515,9 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
 
 initPrefs();
 refresh();
-setInterval(refresh, 4000);
+setInterval(() => {
+  if (document.visibilityState === "visible") void refresh();
+}, 4000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void refresh();
+});

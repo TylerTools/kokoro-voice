@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Kokoro Voice 2.1",
-  "version": "2.1.0-beta.1",
+  "version": "2.1.1-beta.3",
   "identifier": "com.tylertools.kokoro-voice-2-1",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -60,6 +60,11 @@
     "resources": {
       "../../server.py": "engine-src/server.py",
       "../../stt_config.py": "engine-src/stt_config.py",
+      "../../stt_worker.py": "engine-src/stt_worker.py",
+      "../../stt_worker_manager.py": "engine-src/stt_worker_manager.py",
+      "../../tts_engine.py": "engine-src/tts_engine.py",
+      "../../tts_worker.py": "engine-src/tts_worker.py",
+      "../../tts_worker_manager.py": "engine-src/tts_worker_manager.py",
       "../../benchmark_stt.py": "engine-src/benchmark_stt.py",
       "../../requirements.txt": "engine-src/requirements.txt",
       "../../requirements-macos.txt": "engine-src/requirements-macos.txt",

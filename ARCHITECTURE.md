@@ -107,7 +107,9 @@ accepted registration. Only `hotkey-triggered` proves the end-to-end input path.
 
 1. A shortcut or tray action calls `read_selection`.
 2. The desktop host refuses to compete with active Dictation.
-3. `client/speak.py --selection` copies the current accessible selection.
+3. On macOS the desktop host reads `AXSelectedText` without touching the
+   clipboard. A fresh selection is streamed to `client/speak.py` over stdin;
+   no selection pauses or resumes active playback.
 4. The client chunks text, pipelines authenticated `/speak` requests, and plays
    audio while preparing the next chunk.
 5. The floating player controls pause/resume/stop without stealing focus.
@@ -130,8 +132,9 @@ process is incorrect because a later synthesized chunk would restart playback.
 1. DictateStart captures the focused accessibility target before opening UI.
 2. `client/dictate.py` records 16 kHz mono audio in memory and emits a small
    stdout protocol (`READY`, previews, `TRANSCRIBING`, final text, errors).
-3. The engine runs synchronous Whisper inference in a worker thread so `/health`
-   remains responsive and the watchdog does not kill a healthy long request.
+3. The engine delegates synchronous Whisper inference to a lazy child process,
+   while the HTTP request itself stays off the ASGI event loop so `/health`
+   remains responsive.
 4. Preview revisions are applied only while `text_backend.rs` proves target,
    process scope, owned text, selection, and caret invariants.
 5. Any focus/manual-edit/unsupported-control mismatch permanently falls back to
@@ -184,23 +187,94 @@ The `.app` bundles small Python sources and lockfiles, not the models or private
 environment. First run creates:
 
 ```text
-~/Library/Application Support/Kokoro Voice/engine/
+~/Library/Application Support/Kokoro Voice 2.1/engine/
   .venv/
   models/
-  server.py
-  stt_config.py
-  client/
-  requirements-macos.lock
+  active-source
+  sources/
+    2.1.1-beta.3-<content hash>/
+      server.py
+      stt_config.py
+      client/
+      requirements-macos.lock
 ```
 
 Setup downloads pinned model artifacts, verifies their hashes, and installs the
-hashed platform lockfile. Startup synchronizes bundled sources into the engine
-directory, starts Uvicorn, writes its PID, and begins a watchdog. Graceful app
-exit stops the managed child; signal handlers cover termination paths that skip
-Tauri exit hooks.
+hashed platform lockfile without dependency resolution. Large model hashes are
+streamed instead of loading entire artifacts into desktop memory, and the macOS
+lock intentionally excludes Torch because MLX Whisper does not use it. Startup
+copies bundled sources into an immutable,
+content-addressed version directory and atomically changes `active-source` only
+after the copy is complete. The environment and models remain shared, but the
+running server and clients always come from one complete source version. The
+host then starts Uvicorn, writes its PID, and begins a watchdog. Graceful app
+exit sends the managed child SIGTERM and allows its Uvicorn shutdown hook to
+retire the STT worker before a bounded SIGKILL fallback. Both Tauri exit events
+are covered; signal handlers cover termination paths that skip those hooks.
 
-The installed bundle is replaceable and read-only. Models and the private
-environment survive application updates.
+The host creates or repairs a private bearer token before every engine launch;
+startup fails closed if the token cannot be stored as a regular `0600` file.
+On macOS, Whisper runs from the app-owned Hugging Face cache below `models/`.
+An existing pinned global cache is adopted with validated hard links so the app
+owns its namespace without duplicating the multi-gigabyte model. The installed
+bundle is replaceable and read-only. Models and the private environment survive
+application updates.
+
+Whisper is not loaded at general application startup. The main engine warms a
+recyclable `tts_worker.py` child and launches `stt_worker.py` only for voiced
+Dictation audio. A serialized parent/worker exchange accounts for each active request; the
+same lock protects the idle timer, so expiry cannot terminate a transcription.
+The first cold transcription gets a 90-second idle lease. A warm repeat extends
+the current burst to 180 seconds, balancing rapid follow-up dictation against
+the roughly 2.36 GB warm STT footprint. `KOKORO_STT_BASE_IDLE_SECONDS` and
+`KOKORO_STT_REPEAT_IDLE_SECONDS` tune those leases; the legacy
+`KOKORO_STT_IDLE_SECONDS` overrides both, and `0` retains the worker forever.
+At expiry, the parent asks the worker to exit cleanly and uses bounded
+terminate/kill fallbacks only if it does not respond. Process exit releases
+mlx-whisper's model singleton and every associated MLX/Metal allocation.
+`/health` remains healthy while reporting STT as `cold`, `loading`, `busy`,
+`warm`, or `error`;
+`stt_ready` describes operational readiness and `stt_warm` describes residency.
+The desktop therefore does not confuse intentional STT retirement with an
+incomplete startup or engine crash.
+
+ONNX Runtime's CPU memory arena remains enabled: disabling it increased retained
+memory in Candidate QC. Kokoro instead lives in a recyclable child process. The
+normal short-read path stays warm; cumulative long-read text retires the worker
+between requests, and the client's final-chunk marker guarantees retirement at
+the end of a long session. Process exit returns ONNX and allocator memory to macOS.
+Cancelled playback explicitly retires a partially filled worker as well.
+
+Dictation audio stays in memory and is not a recording archive. Read-aloud WAV
+chunks are temporary working state; completed and cancelled playback removes
+them immediately. Startup
+also scavenges only exact app-managed WAV/control filenames, preserves live
+speaker files, refuses symlinks and unknown files, and applies an age gate.
+Stable alone may clean its legacy runtime namespace; Candidate cannot touch it.
+Operational logs are bounded to one current and one previous hotkey log.
+
+## Release channels and rollback
+
+Stable and Candidate are separate installed products. Stable retains bundle ID
+`com.tylertools.kokoro-voice-2-1`, port 8125, its existing permissions, and its
+runtime directories. Candidate uses bundle ID
+`com.tylertools.kokoro-voice-candidate`, port 8126, separate config and engine
+directories, and launch-at-login off by default. Candidate is passive: it does
+not register global hotkeys or start the Quartz input controller, so it cannot
+compete with the running Stable accessibility owner.
+
+Candidate is never renamed or promoted into Stable. Once Candidate is accepted,
+the same source is built again with Stable identity. The release manager
+verifies the bundle identity and signature, copies both the incoming artifact
+and the prior Stable release before stopping Stable, then performs an atomic
+same-directory swap. It starts the new release and waits for `/health`; failure
+restores and relaunches the previous app automatically. Promotion also requires
+a fresh `runtime-readiness` event from the new app's exact version and process,
+proving Accessibility, Input Monitoring, and hotkey registration. Old log
+records cannot satisfy this gate. The explicit rollback command swaps to the
+archived bundle and restores the small set of compatibility-sensitive settings.
+Models, tokens, audio, logs, and the Python environment are not duplicated into
+release archives.
 
 The supported desktop topology has exactly one engine owner: the Tauri app.
 `install.sh` and `hosts/macos/` predate that ownership model and are retained
@@ -244,6 +318,12 @@ binary CDHash. Replacing the bundle changes that identity and can invalidate
 both privacy approvals. The final installed binary must receive approval after
 the last rebuild. A production or local stable code-signing identity avoids
 this repeated approval cycle.
+
+Stable builds fail closed when no persistent signing identity is configured.
+After the one-time transition to Developer ID, the release manager requires the
+incoming and installed bundles to have the same designated requirement before
+cutover. This is the identity macOS uses to carry privacy grants across
+versions; matching only the bundle identifier is not sufficient.
 
 ## Verification layers
 

@@ -16,9 +16,10 @@ Kokoro Voice 2.1 owns only:
 - its own launch-at-login registration and complete-key shortcuts.
 
 Do not launch or install a candidate until `tests/test_variant_isolation.py`
-passes. Keep the original app running during source work. A candidate may run
-beside it only after its bundle, process, port, paths, and shortcuts have been
-verified as distinct.
+passes. Keep Stable running during source work. Candidate is passive: it must
+never register global hotkeys or start the macOS input controller beside
+Stable. Accessibility behavior is verified only during the transactional
+Stable cutover, with automatic rollback if fresh readiness evidence fails.
 
 This file is the operating contract for anyone changing this repository. Read
 it together with [ARCHITECTURE.md](ARCHITECTURE.md) before editing desktop
@@ -50,6 +51,9 @@ and performs no outbound network requests after setup.
 | `app/src-tauri/src/dictation_protocol.rs` | Typed parser for the Python dictation child's stdout contract. |
 | `app/src-tauri/src/hotkeys.rs` | Shortcut domain model, defaults, display contract, and recorder classification. |
 | `app/src-tauri/src/chords.rs` | macOS Quartz adapter for modifier-only Read/Dictate gestures and synthetic text events. |
+| `app/src-tauri/src/read_action.rs` | Clipboard-free Read decision policy: speak, toggle, or explain rejection. |
+| `app/src-tauri/src/runtime.rs` | Authenticated engine lifecycle, app-owned model cache, paths, watchdog, and structured logs. |
+| `app/src-tauri/src/runtime_hygiene.rs` | Exact-name, age-gated cleanup for app-managed temporary runtime files. |
 | `app/src-tauri/src/text_backend.rs` | Target-locked accessibility insertion and browser projection verification. |
 | `app/index.html` / `app/player.html` | Settings and floating-status markup. |
 | `tests/` | Python service/client contract tests. Rust unit tests live beside their modules. |
@@ -170,6 +174,10 @@ User state is under `~/.config/kokoro-voice-2-1/`:
 The private environment and models remain in Application Support across app
 updates. Startup synchronizes bundled Python sources before launching the
 engine. Never write into the installed `.app` at runtime; it breaks signing.
+The bearer token is validated or atomically bootstrapped on every engine launch.
+The macOS Whisper cache is app-owned; adoption from the global cache must use
+validated hard links and must never silently duplicate the model. Candidate may
+clean only its own runtime namespace. Stable alone owns legacy cleanup.
 
 Local ad-hoc signatures use the binary CDHash as their designated requirement.
 Every rebuilt binary therefore appears to macOS privacy controls as a different

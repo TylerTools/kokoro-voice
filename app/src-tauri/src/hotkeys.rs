@@ -12,11 +12,24 @@
 
 use serde::Serialize;
 
-// Deliberately distinct from Kokoro Voice 1 so both event taps can run during
-// verification without one physical press dispatching actions in both apps.
-pub const DEFAULT_READ: &str = "Control+Alt+Command+KeyU";
-pub const DEFAULT_DICTATE: &str = "Control+Alt+Command+KeyI";
-pub const DEFAULT_SNIP: &str = "Control+Alt+Command+KeyP";
+// Stable is distinct from Kokoro Voice 1. Candidate adds Shift so its event tap
+// can run beside Stable without one physical press dispatching both builds.
+const CANDIDATE_BUILD: bool = option_env!("KOKORO_BUILD_CHANNEL").is_some();
+pub const DEFAULT_READ: &str = if CANDIDATE_BUILD {
+    "Control+Alt+Command+Shift+KeyU"
+} else {
+    "Control+Alt+Command+KeyU"
+};
+pub const DEFAULT_DICTATE: &str = if CANDIDATE_BUILD {
+    "Control+Alt+Command+Shift+KeyI"
+} else {
+    "Control+Alt+Command+KeyI"
+};
+pub const DEFAULT_SNIP: &str = if CANDIDATE_BUILD {
+    "Control+Alt+Command+Shift+KeyP"
+} else {
+    "Control+Alt+Command+KeyP"
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]

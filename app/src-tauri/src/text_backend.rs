@@ -47,6 +47,7 @@ pub enum ApplyOutcome {
 }
 
 pub trait TextBackend {
+    fn selected_text() -> Result<Option<String>, ApplyOutcome>;
     fn capture_target() -> Result<TargetSnapshot, ApplyOutcome>;
     fn apply_revision(
         target: &mut TargetSnapshot,
@@ -57,7 +58,7 @@ pub trait TextBackend {
 
 pub struct PlatformTextBackend;
 
-#[cfg(test)]
+#[cfg(any(target_os = "macos", test))]
 fn char_slice(text: &str, start: usize, len: usize) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
     (start + len <= chars.len()).then(|| chars[start..start + len].iter().collect())
@@ -253,8 +254,8 @@ mod platform {
     use super::*;
     use accessibility::{AXAttribute, AXUIElement, AXUIElementAttributes};
     use accessibility_sys::{
-        kAXFocusedUIElementAttribute, kAXSelectedTextRangeAttribute, kAXValueTypeCFRange,
-        AXUIElementGetPid, AXValueGetType, AXValueGetValue, AXValueRef,
+        kAXFocusedUIElementAttribute, kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute,
+        kAXValueTypeCFRange, AXUIElementGetPid, AXValueGetType, AXValueGetValue, AXValueRef,
     };
     use core_foundation::{
         base::{CFRange, CFType, TCFType},
@@ -286,7 +287,7 @@ mod platform {
         }
     }
 
-    fn focused() -> Result<(AXUIElement, i32, String, usize, usize), ApplyOutcome> {
+    fn focused_element() -> Result<AXUIElement, ApplyOutcome> {
         if !macos_accessibility_client::accessibility::application_is_trusted() {
             return Err(ApplyOutcome::Unavailable);
         }
@@ -301,6 +302,12 @@ mod platform {
         if role.contains("Secure") || subrole.contains("Secure") {
             return Err(ApplyOutcome::SecureField);
         }
+        Ok(element)
+    }
+
+    fn focused() -> Result<(AXUIElement, i32, String, usize, usize), ApplyOutcome> {
+        let element = focused_element()?;
+        let role = element.role().map(|v| v.to_string()).unwrap_or_default();
         let value_is_settable = element.is_settable(&AXAttribute::value()).unwrap_or(false);
         if !value_is_settable {
             return Err(ApplyOutcome::Unavailable);
@@ -351,6 +358,27 @@ mod platform {
     }
 
     impl TextBackend for PlatformTextBackend {
+        fn selected_text() -> Result<Option<String>, ApplyOutcome> {
+            let element = focused_element()?;
+            if let Ok(value) = element.attribute(&custom(kAXSelectedTextAttribute)) {
+                if let Some(text) = value.downcast_into::<CFString>() {
+                    let text = text.to_string();
+                    return Ok((!text.trim().is_empty()).then_some(text));
+                }
+            }
+
+            // Editable controls do not all expose AXSelectedText directly.
+            // Reuse the range-checked snapshot as a compatibility fallback;
+            // unlike Cmd+C this never mutates or exposes the clipboard.
+            let (_, _, value, start, selected_len) = focused()?;
+            if selected_len == 0 {
+                return Ok(None);
+            }
+            char_slice(&value, start, selected_len)
+                .map(Some)
+                .ok_or(ApplyOutcome::Unavailable)
+        }
+
         fn capture_target() -> Result<TargetSnapshot, ApplyOutcome> {
             let (element, pid, baseline, start, selected_len) = focused()?;
             let (target_id, scope_id) = identities(&element, pid);
@@ -546,6 +574,10 @@ mod platform {
     };
 
     impl TextBackend for PlatformTextBackend {
+        fn selected_text() -> Result<Option<String>, ApplyOutcome> {
+            Err(ApplyOutcome::ClipboardFallback("clipboard-only".into()))
+        }
+
         fn capture_target() -> Result<TargetSnapshot, ApplyOutcome> {
             // Block password controls with native UI Automation. Other Windows
             // controls remain clipboard-only until TextPattern range ownership
@@ -583,6 +615,10 @@ mod platform {
 mod platform {
     use super::*;
     impl TextBackend for PlatformTextBackend {
+        fn selected_text() -> Result<Option<String>, ApplyOutcome> {
+            Err(ApplyOutcome::Unavailable)
+        }
+
         fn capture_target() -> Result<TargetSnapshot, ApplyOutcome> {
             Err(ApplyOutcome::Unavailable)
         }

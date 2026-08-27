@@ -486,6 +486,25 @@ fn modifier_mask_from_names(modifiers: &[&str]) -> u8 {
     })
 }
 
+fn append_bounded_log(
+    path: &std::path::Path,
+    line: &str,
+    maximum_bytes: u64,
+) -> std::io::Result<()> {
+    if path.metadata().map(|value| value.len()).unwrap_or(0) >= maximum_bytes {
+        let previous = path.with_file_name("hotkey.previous.log");
+        if previous.exists() {
+            std::fs::remove_file(&previous)?;
+        }
+        std::fs::rename(path, previous)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")
+}
+
 fn log_event(line: &str) {
     let path = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -496,13 +515,7 @@ fn log_event(line: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(f, "{line}");
-    }
+    let _ = append_bounded_log(&path, line, 1_000_000);
 }
 
 pub fn watch<F1, F2, F3, F4, F5>(
@@ -705,6 +718,23 @@ pub fn replace_focused_text(delete_chars: usize, insert: &str) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotkey_log_keeps_one_bounded_previous_file() {
+        let directory =
+            std::env::temp_dir().join(format!("kokoro-hotkey-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("hotkey.log");
+        std::fs::write(&path, b"0123456789").unwrap();
+        append_bounded_log(&path, "next", 10).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(directory.join("hotkey.previous.log")).unwrap(),
+            "0123456789"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "next\n");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn read_fires_only_on_clean_release() {

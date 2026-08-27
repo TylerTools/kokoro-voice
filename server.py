@@ -1,16 +1,14 @@
 """
 kokoro-voice service — local text-to-speech and speech-to-text.
 
-Owns both models and exposes them over HTTP. Thin per-platform clients POST text
-here and play the returned audio, or POST audio and receive a transcript.
+Owns recyclable TTS and STT worker processes. Thin per-platform clients POST
+text here and play the returned audio, or POST audio and receive a transcript.
 
 Fully local: no API keys, no outbound network calls at runtime.
 """
 import hmac
 import io
 import os
-import platform
-import threading
 import time
 
 import soundfile as sf
@@ -19,20 +17,15 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from kokoro_onnx import Kokoro
-from stt_config import (
-    FASTER_WHISPER_REPO,
-    FASTER_WHISPER_REVISION,
-    candidates as stt_candidates,
-    load_cpu_compute,
-)
+from stt_worker_manager import SttWorkerError, SttWorkerManager
+from tts_worker_manager import TtsWorkerError, TtsWorkerManager
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # fp16 measured faster than fp32 on this M4 (0.50s vs 0.59s first-chunk) and is
 # 141MB smaller. int8 was benchmarked too and is much SLOWER (1.27s) — ARM lacks
 # good int8 kernels for this graph. Do not "optimize" by switching to int8.
-MODEL = os.path.join(HERE, "models", os.environ.get("KOKORO_MODEL", "kokoro-v1.0.fp16.onnx"))
-VOICES = os.path.join(HERE, "models", "voices-v1.0.bin")
+TTS_MODEL_NAME = os.environ.get("KOKORO_MODEL", "kokoro-v1.0.fp16.onnx")
+TTS_VOICES_NAME = "voices-v1.0.bin"
 
 DEFAULT_VOICE = os.environ.get("KOKORO_VOICE", "af_heart")
 DEFAULT_LANG = os.environ.get("KOKORO_LANG", "en-us")
@@ -65,49 +58,32 @@ MAX_CHARS = int(os.environ.get("KOKORO_MAX_CHARS", "20000"))
 MAX_BODY_BYTES = int(os.environ.get("KOKORO_MAX_BODY", str(256 * 1024)))
 # Dictation audio: 16kHz mono PCM16 is 32KB/s, so 8MB ~= 4 minutes of speech.
 MAX_AUDIO_BYTES = int(os.environ.get("KOKORO_MAX_AUDIO", str(8 * 1024 * 1024)))
-# Keep each call comfortably below Kokoro's 510-token style-vector boundary.
-# Phonemization can expand text, so a character limit alone is not a proof; the
-# recursive context-error fallback below is the final guard.
-TTS_SEGMENT_CHARS = int(os.environ.get("KOKORO_TTS_SEGMENT_CHARS", "350"))
-
-# Speech-to-text. mlx-whisper large-v3-turbo on the Apple GPU measured 0.86s for
-# 6.85s of audio (7.9x realtime) vs 2.48s for faster-whisper large-v3-turbo
-# float32 on CPU — large-model accuracy at small-model latency. int8 was slower
-# again (4.30s), the same ARM int8 trap seen with Kokoro. Do not "optimize" to
-# int8 or move this to CPU.
-#
-# PINNED, and the plist sets HF_HUB_OFFLINE=1. Left unpinned, huggingface_hub
-# contacts the CDN on every load to resolve "latest" — verified: an outbound
-# HTTPS socket to the HF CDN was open from this service. That both breaks the
-# "fully local" promise above and means an upstream repo change silently swaps
-# the weights that transcribe your microphone. Cached revision below; to move
-# it deliberately, unset HF_HUB_OFFLINE, pull, then re-pin to the new hash.
-WHISPER_REVISION = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
-WHISPER_REPO = os.environ.get("WHISPER_REPO", "mlx-community/whisper-large-v3-turbo")
-WHISPER_LANG = os.environ.get("WHISPER_LANG", "en")
-
-
-def _mlx_model_path() -> str:
-    from huggingface_hub import snapshot_download
-    return snapshot_download(
-        WHISPER_REPO, revision=WHISPER_REVISION, local_files_only=True
+# mlx-whisper retains its model and Metal heap in a process singleton. A single
+# dictation gets a short lease; a warm repeat indicates a real burst and earns
+# a longer lease. The legacy override keeps a one-value operational rollback.
+_stt_idle_override = os.environ.get("KOKORO_STT_IDLE_SECONDS")
+if _stt_idle_override is not None:
+    STT_IDLE_SECONDS = STT_REPEAT_IDLE_SECONDS = float(_stt_idle_override)
+else:
+    STT_IDLE_SECONDS = float(os.environ.get("KOKORO_STT_BASE_IDLE_SECONDS", "90"))
+    STT_REPEAT_IDLE_SECONDS = float(
+        os.environ.get("KOKORO_STT_REPEAT_IDLE_SECONDS", "180")
     )
+_stt_worker = SttWorkerManager(
+    os.path.join(HERE, "stt_worker.py"),
+    idle_seconds=STT_IDLE_SECONDS,
+    repeat_idle_seconds=STT_REPEAT_IDLE_SECONDS,
+)
+# The read-aloud client sends a sequence of <=400-character chunks. Retire only
+# after enough cumulative text indicates a long document, then let process exit
+# return ONNX's arena and libc allocations to macOS between requests.
+TTS_RETIRE_CHARS = int(os.environ.get("KOKORO_TTS_WORKER_RETIRE_CHARS", "2000"))
+_tts_worker = TtsWorkerManager(
+    os.path.join(HERE, "tts_worker.py"), retire_chars=TTS_RETIRE_CHARS
+)
 
-app = FastAPI(title="Kokoro TTS", version="1.0")
-
-# onnxruntime sessions are not safe to drive concurrently from multiple
-# threads; serialize synthesis so two hotkey presses can't corrupt each other.
-_lock = threading.Lock()
-_kokoro: Kokoro | None = None
-
-
-def get_kokoro() -> Kokoro:
-    global _kokoro
-    if _kokoro is None:
-        with _lock:
-            if _kokoro is None:
-                _kokoro = Kokoro(MODEL, VOICES)
-    return _kokoro
+SERVICE_VERSION = os.environ.get("KOKORO_SERVICE_VERSION", "development")
+app = FastAPI(title="Kokoro TTS", version=SERVICE_VERSION)
 
 
 class SpeakRequest(BaseModel):
@@ -117,6 +93,9 @@ class SpeakRequest(BaseModel):
     # 422 contract error instead of surfacing an AssertionError as HTTP 500.
     speed: float = Field(1.0, ge=0.5, le=2.0)
     lang: str | None = None
+    # The read-aloud client marks only its final chunk. This lets the worker
+    # retire after a completed long document without penalizing short reads.
+    session_end: bool = True
 
 
 def _check_auth(authorization: str | None) -> None:
@@ -128,79 +107,6 @@ def _check_auth(authorization: str | None) -> None:
     # who can time the response.
     if authorization is None or not hmac.compare_digest(authorization, expected):
         raise HTTPException(status_code=401, detail="unauthorized")
-
-
-def _split_text_once(text: str) -> tuple[str, str]:
-    """Split text near its midpoint, preferring a natural speech boundary."""
-    midpoint = max(1, len(text) // 2)
-    candidates = [
-        text.rfind(mark, 0, midpoint + 1)
-        for mark in (". ", "! ", "? ", "; ", ", ", " ")
-    ]
-    cut = max(candidates, default=-1)
-    if cut < max(1, midpoint // 2):
-        cut = midpoint
-    elif text[cut:cut + 2] in (". ", "! ", "? ", "; ", ", "):
-        cut += 1
-    left = text[:cut].strip()
-    right = text[cut:].strip()
-    if not left or not right:
-        left, right = text[:midpoint], text[midpoint:]
-    return left, right
-
-
-def _tts_context_error(error: Exception) -> bool:
-    message = str(error).lower()
-    return (
-        isinstance(error, IndexError) and "out of bounds" in message
-    ) or (
-        isinstance(error, AssertionError) and "context length" in message
-    )
-
-
-def _create_tts_segment(k, text: str, voice: str, speed: float, lang: str):
-    """Create one safe segment, recursively recovering from tokenizer expansion.
-
-    kokoro-onnx 0.5.0 splits on phoneme character count, but its voice-style
-    table is indexed by token count. A batch can therefore contain 510 tokens
-    and raise IndexError even though it passed the library's length check.
-    """
-    try:
-        return k.create(text, voice=voice, speed=speed, lang=lang)
-    except (IndexError, AssertionError) as error:
-        if len(text) <= 1 or not _tts_context_error(error):
-            raise
-        left, right = _split_text_once(text)
-        left_audio, left_rate = _create_tts_segment(k, left, voice, speed, lang)
-        right_audio, right_rate = _create_tts_segment(k, right, voice, speed, lang)
-        if left_rate != right_rate:
-            raise RuntimeError("Kokoro returned inconsistent sample rates")
-        import numpy as np
-        return np.concatenate([left_audio, right_audio]), left_rate
-
-
-def _create_tts(k, text: str, voice: str, speed: float, lang: str):
-    """Synthesize arbitrary accepted text without crossing model context limits."""
-    pieces: list[str] = []
-    remaining = text.strip()
-    while len(remaining) > TTS_SEGMENT_CHARS:
-        window = remaining[:TTS_SEGMENT_CHARS]
-        cut = max(window.rfind(mark) for mark in (". ", "! ", "? ", "; ", ", ", " "))
-        if cut < TTS_SEGMENT_CHARS // 2:
-            cut = TTS_SEGMENT_CHARS
-        else:
-            cut += 1
-        pieces.append(remaining[:cut].strip())
-        remaining = remaining[cut:].strip()
-    if remaining:
-        pieces.append(remaining)
-
-    rendered = [_create_tts_segment(k, piece, voice, speed, lang) for piece in pieces]
-    sample_rates = {rate for _, rate in rendered}
-    if len(sample_rates) != 1:
-        raise RuntimeError("Kokoro returned inconsistent sample rates")
-    import numpy as np
-    return np.concatenate([audio for audio, _ in rendered]), sample_rates.pop()
 
 
 @app.middleware("http")
@@ -238,29 +144,43 @@ def _warm() -> None:
             flush=True,
         )
     t0 = time.time()
-    get_kokoro()
-    print(f"[kokoro] model loaded in {time.time() - t0:.2f}s", flush=True)
-    # Background so TTS is usable immediately; STT is warm a few seconds later.
-    threading.Thread(target=_warm_whisper, daemon=True).start()
+    _tts_worker.warm()
+    print(f"[kokoro] TTS worker loaded in {time.time() - t0:.2f}s", flush=True)
+
+
+@app.on_event("shutdown")
+def _shutdown_workers() -> None:
+    _tts_worker.shutdown()
+    _stt_worker.shutdown()
 
 
 @app.get("/health")
 def health() -> dict:
-    k = get_kokoro()
+    tts = _tts_worker.status()
+    stt = _stt_worker.status()
+    tts_ready = tts["state"] not in {"error", "stopped"}
+    stt_ready = stt["state"] not in {"error", "stopped"}
     return {
         "status": "ok",
         "service_version": app.version,
-        "voices": len(k.get_voices()),
+        "voices": tts["voice_count"],
         "default_voice": DEFAULT_VOICE,
         "auth_required": bool(AUTH_TOKEN),
-        # health() cannot return until get_kokoro() succeeds, so this is an
-        # actual readiness result rather than a configuration claim.
-        "tts_ready": True,
-        "stt_ready": _whisper_ready,
-        "stt_backend": _stt_backend,
+        "tts_ready": tts_ready,
+        "tts_warm": tts["state"] == "warm",
+        "tts_cpu_mem_arena": tts.get("cpu_mem_arena"),
+        "tts_status": tts,
+        # A cold worker is intentional and ready on demand. Keep operational
+        # readiness separate from residency so the UI does not report a healthy
+        # memory-saving state as an incomplete startup.
+        "stt_ready": stt_ready,
+        "stt_warm": stt["state"] == "warm",
+        "stt_backend": stt.get("backend"),
+        "stt_cache_mode": os.environ.get("KOKORO_STT_CACHE_MODE", "unknown"),
+        "stt_status": stt,
         "models": {
-            "tts": os.path.basename(MODEL),
-            "voices": os.path.basename(VOICES),
+            "tts": TTS_MODEL_NAME,
+            "voices": TTS_VOICES_NAME,
             "stt": "large-v3-turbo",
         },
     }
@@ -268,7 +188,13 @@ def health() -> dict:
 
 @app.get("/voices")
 def voices() -> dict:
-    return {"voices": sorted(get_kokoro().get_voices())}
+    return {"voices": _tts_worker.voices()}
+
+
+@app.post("/tts/retire")
+def retire_tts(authorization: str | None = Header(default=None)) -> dict:
+    _check_auth(authorization)
+    return {"retired": _tts_worker.retire()}
 
 
 @app.post("/speak")
@@ -284,23 +210,24 @@ def speak(req: SpeakRequest, authorization: str | None = Header(default=None)) -
             detail=f"text too long: {len(text)} chars (max {MAX_CHARS})",
         )
 
-    k = get_kokoro()
     voice = req.voice or DEFAULT_VOICE
-    if voice not in k.get_voices():
+    if voice not in _tts_worker.voices():
         raise HTTPException(status_code=400, detail=f"unknown voice: {voice}")
 
-    t0 = time.time()
-    with _lock:
-        samples, sample_rate = _create_tts(
-            k, text, voice=voice, speed=req.speed, lang=req.lang or DEFAULT_LANG
+    try:
+        result = _tts_worker.synthesize(
+            text,
+            voice=voice,
+            speed=req.speed,
+            lang=req.lang or DEFAULT_LANG,
+            session_end=req.session_end,
         )
-    synth_s = time.time() - t0
-
-    buf = io.BytesIO()
-    sf.write(buf, samples, sample_rate, format="WAV", subtype="PCM_16")
-    audio = buf.getvalue()
-
-    duration = len(samples) / sample_rate
+    except TtsWorkerError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    audio = result.pop("audio")
+    sample_rate = int(result["sample_rate"])
+    duration = int(result["sample_count"]) / sample_rate
+    synth_s = float(result["synth_seconds"])
     print(
         f"[kokoro] {len(text)} chars -> {duration:.2f}s audio in {synth_s:.2f}s "
         f"({duration / synth_s:.1f}x realtime, voice={voice})",
@@ -319,11 +246,6 @@ def speak(req: SpeakRequest, authorization: str | None = Header(default=None)) -
 
 
 # ── speech to text ──────────────────────────────────────────────────────────
-_whisper_lock = threading.Lock()
-_whisper_ready = False
-_whisper_model = None
-_stt_backend = "mlx" if platform.system() == "Darwin" else "faster-whisper-cpu"
-
 # Stock Whisper filler, emitted when it is handed silence. These come from the
 # YouTube-caption data it was trained on.
 _HALLUCINATION_ARTIFACTS = {
@@ -400,56 +322,6 @@ def _drop_hallucinated(text: str) -> str:
     return text
 
 
-def _warm_whisper() -> None:
-    """Load the Whisper weights once, off the request path.
-
-    First use otherwise pays ~2.6s of model load on top of transcription, which
-    is the difference between dictation feeling instant and feeling broken.
-    """
-    global _whisper_ready, _whisper_model, _stt_backend
-    try:
-        import numpy as np
-        with _whisper_lock:
-            if platform.system() == "Darwin":
-                import mlx_whisper
-                mlx_whisper.transcribe(
-                    np.zeros(16000, dtype="float32"),
-                    path_or_hf_repo=_mlx_model_path(),
-                    language=WHISPER_LANG,
-                )
-                _stt_backend = "mlx"
-            else:
-                from faster_whisper import WhisperModel
-                options = stt_candidates(
-                    platform.system(), os.environ.get("KOKORO_STT_DEVICE", "auto"),
-                    os.environ.get("KOKORO_STT_CPU_COMPUTE") or load_cpu_compute(
-                        os.path.join(os.path.dirname(TOKEN_FILE), "stt-backend.json")
-                    ),
-                )
-                last_error = None
-                for _backend, device, compute in options:
-                    try:
-                        _whisper_model = WhisperModel(
-                            FASTER_WHISPER_REPO,
-                            revision=FASTER_WHISPER_REVISION,
-                            local_files_only=True,
-                            device=device,
-                            compute_type=compute,
-                        )
-                        _stt_backend = f"faster-whisper-{device}-{compute}"
-                        break
-                    except Exception as error:  # CUDA absence is an expected fallback
-                        last_error = error
-                if _whisper_model is None:
-                    raise RuntimeError("no usable speech-recognition backend") from last_error
-                # Force lazy model initialization and CUDA errors during warmup.
-                list(_whisper_model.transcribe(np.zeros(16000, dtype="float32"), language=WHISPER_LANG)[0])
-            _whisper_ready = True
-        print("[whisper] model warm", flush=True)
-    except Exception as e:  # noqa: BLE001 - never let STT break the TTS service
-        print(f"[whisper] warm-up failed: {type(e).__name__}: {e}", flush=True)
-
-
 @app.post("/transcribe")
 async def transcribe(request: Request,
                      authorization: str | None = Header(default=None)) -> dict:
@@ -493,36 +365,14 @@ def _transcribe_audio(raw: bytes) -> dict:
         return {"text": "", "audio_seconds": round(raw_duration, 3),
                 "transcribe_seconds": 0.0}
 
-    t0 = time.time()
-    with _whisper_lock:                     # one GPU decode at a time
-        if platform.system() == "Darwin":
-            import mlx_whisper
-            result = mlx_whisper.transcribe(
-                audio,
-                path_or_hf_repo=_mlx_model_path(),
-                language=WHISPER_LANG,
-            # Whisper decodes in 30s windows and by default primes each window
-            # with the text decoded from the previous one, so a single bad
-            # window seeds the next and the model snowballs. Dictation is a
-            # sequence of INDEPENDENT utterances, not continuous narration, so
-            # the carry-over buys nothing. Measured on the 85s repro: 1232
-            # chars of runaway with it on, 128 with it off — and 4.6x faster.
-            #
-            # Deliberately NOT setting word_timestamps/hallucination_silence_
-            # threshold: benchmarked here, they doubled latency (1.1s -> 2.0s)
-            # and did not suppress the silence artifact at all. _trim_silence
-            # above is what actually removes the trigger.
-                condition_on_previous_text=False,
-            )
-            decoded = result.get("text") or ""
-        else:
-            if _whisper_model is None:
-                raise HTTPException(status_code=503, detail="speech recognition is not ready")
-            segments, _info = _whisper_model.transcribe(
-                audio, language=WHISPER_LANG, condition_on_previous_text=False
-            )
-            decoded = " ".join(segment.text.strip() for segment in segments)
-    elapsed = time.time() - t0
+    try:
+        result = _stt_worker.transcribe(audio.astype("float32", copy=False).tobytes())
+    except SttWorkerError as error:
+        raise HTTPException(
+            status_code=503, detail=f"speech recognition worker failed: {error}"
+        ) from error
+    elapsed = float(result["transcribe_seconds"])
+    decoded = result.get("text") or ""
     text = _drop_hallucinated(decoded.strip())
 
     rate = len(text) / max(duration, 1e-6)
@@ -534,5 +384,11 @@ def _transcribe_audio(raw: bytes) -> dict:
         + ("  <-- ANOMALOUS RATE, possible hallucination" if rate > 25 else ""),
         flush=True,
     )
-    return {"text": text, "audio_seconds": round(duration, 3),
-            "transcribe_seconds": round(elapsed, 3)}
+    return {
+        "text": text,
+        "audio_seconds": round(duration, 3),
+        "transcribe_seconds": round(elapsed, 3),
+        "stt_backend": result.get("backend"),
+        "stt_cold_start": bool(result.get("cold_start")),
+        "stt_cold_start_seconds": result.get("worker_cold_start_seconds"),
+    }

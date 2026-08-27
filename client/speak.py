@@ -24,6 +24,7 @@ Only stdlib — no pip install needed on the client side.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import platform
@@ -121,6 +122,56 @@ def _state_dir() -> str:
 
 STATE_DIR = _state_dir()
 STATEFILE = os.path.join(STATE_DIR, "playback.state")
+LOCKFILE = os.path.join(STATE_DIR, "playback.lock")
+_CANCELLED = threading.Event()
+
+
+class PlaybackCancelled(Exception):
+    """Cooperative terminal state used to unwind playback cleanup."""
+
+
+class PlaybackLock:
+    """Cross-platform process lock held for one complete playback session."""
+
+    def __init__(self) -> None:
+        self._file = None
+
+    def try_acquire(self) -> bool:
+        if self._file is not None:
+            return True
+        handle = open(LOCKFILE, "a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            if IS_WIN:
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            handle.close()
+            return False
+        self._file = handle
+        return True
+
+    def release(self) -> None:
+        if self._file is None:
+            return
+        try:
+            if IS_WIN:
+                import msvcrt
+                self._file.seek(0)
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._file.close()
+            self._file = None
 
 
 def _url(path: str) -> str:
@@ -213,8 +264,10 @@ def split_chunks(text: str) -> list[str]:
 
 
 # ── service ─────────────────────────────────────────────────────────────────
-def synthesize(text: str, voice: str | None, speed: float) -> bytes:
-    payload = {"text": text, "speed": speed}
+def synthesize(
+    text: str, voice: str | None, speed: float, *, session_end: bool = True
+) -> bytes:
+    payload = {"text": text, "speed": speed, "session_end": session_end}
     if voice:
         payload["voice"] = voice
     req = urllib.request.Request(
@@ -229,52 +282,202 @@ def synthesize(text: str, voice: str | None, speed: float) -> bytes:
         return resp.read()
 
 
-# ── playback control ────────────────────────────────────────────────────────
-def _write_state(player_pid: int | None) -> None:
+def retire_tts() -> None:
+    req = urllib.request.Request(
+        _url("/tts/retire"),
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    if TOKEN:
+        req.add_header("Authorization", f"Bearer {TOKEN}")
     try:
-        with open(STATEFILE, "w") as fh:
-            fh.write(f"{os.getpid()}\n{player_pid or ''}\n")
-    except OSError:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+            response.read()
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
         pass
 
 
-def stop_playback() -> None:
-    """Kill both the player and any pipeline process driving it."""
+# ── playback control ────────────────────────────────────────────────────────
+def _write_state(player_pid: int | None) -> None:
+    temporary = f"{STATEFILE}.{os.getpid()}.tmp"
+    try:
+        with open(temporary, "w") as fh:
+            fh.write(f"{os.getpid()}\n{player_pid or ''}\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, STATEFILE)
+    except OSError:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+
+
+def _state_pids() -> tuple[int | None, int | None]:
     try:
         with open(STATEFILE) as fh:
             lines = fh.read().splitlines()
     except OSError:
-        return
+        return None, None
 
-    for raw in reversed(lines):  # player first, then the pipeline
-        raw = raw.strip()
-        if not raw:
+    def parse(index: int) -> int | None:
+        try:
+            return int(lines[index].strip()) if lines[index].strip() else None
+        except (IndexError, ValueError):
+            return None
+
+    return parse(0), parse(1)
+
+
+def _pipeline_pid() -> int | None:
+    return _state_pids()[0]
+
+
+def _pid_is_our_speaker(pid: int) -> bool:
+    if pid == os.getpid():
+        return True
+    try:
+        if IS_WIN:
+            command = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            ).stdout
+        else:
+            command = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "speak.py" in command
+
+
+def _cleanup_session_files(pid: int) -> None:
+    for pattern in (f"kokoro-{pid}-*.wav", f"kokoro-{pid}-*.part"):
+        for path in glob.glob(os.path.join(STATE_DIR, pattern)):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _cleanup_orphan_files() -> None:
+    pattern = re.compile(r"^kokoro-(\d+)-\d+\.wav(?:\.part)?$")
+    live_speakers: dict[int, bool] = {}
+    for path in glob.glob(os.path.join(STATE_DIR, "kokoro-*")):
+        match = pattern.match(os.path.basename(path))
+        if not match:
+            continue
+        pid = int(match.group(1))
+        if pid not in live_speakers:
+            live_speakers[pid] = _pid_is_our_speaker(pid)
+        if live_speakers[pid]:
             continue
         try:
-            pid = int(raw)
-        except ValueError:
-            continue
-        if pid == os.getpid():
-            continue
-        try:
-            os.kill(pid, signal.SIGTERM if IS_WIN else signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+            os.remove(path)
+        except OSError:
             pass
 
+
+def _clear_state_if_owned(pid: int) -> None:
+    if _pipeline_pid() != pid:
+        return
     try:
         os.remove(STATEFILE)
     except OSError:
         pass
 
 
+def _wait_for_speaker_exit(pid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_is_our_speaker(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_is_our_speaker(pid)
+
+
+def _terminate_speaker(pid: int) -> None:
+    """Cooperatively stop a verified speaker, then force only as a fallback."""
+    if pid == os.getpid() or not _pid_is_our_speaker(pid):
+        return
+    try:
+        if not IS_WIN:
+            # A paused process cannot handle SIGTERM until it is resumed.
+            os.kill(pid, signal.SIGCONT)
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    if _wait_for_speaker_exit(pid, 1.5):
+        return
+    try:
+        os.kill(pid, signal.SIGKILL if not IS_WIN else signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    _wait_for_speaker_exit(pid, 0.5)
+
+
+def stop_playback() -> None:
+    """Stop the active pipeline without bypassing its cleanup path."""
+    pipeline_pid = _pipeline_pid()
+    if pipeline_pid and pipeline_pid != os.getpid():
+        _terminate_speaker(pipeline_pid)
+        _cleanup_session_files(pipeline_pid)
+        _clear_state_if_owned(pipeline_pid)
+    _cleanup_orphan_files()
+
+
 def _player_pid() -> int | None:
     """PID of the process currently producing sound (line 2 of the state file)."""
-    try:
-        with open(STATEFILE) as fh:
-            lines = fh.read().splitlines()
-        return int(lines[1].strip()) if len(lines) > 1 and lines[1].strip() else None
-    except (OSError, ValueError, IndexError):
+    pipeline_pid, player_pid = _state_pids()
+    if not pipeline_pid or not _pid_is_our_speaker(pipeline_pid):
         return None
+    return player_pid
+
+
+def _claim_playback() -> PlaybackLock:
+    """Cancel any predecessor and become the only process allowed to play."""
+    lock = PlaybackLock()
+    deadline = time.monotonic() + 5.0
+    while not lock.try_acquire():
+        predecessor = _pipeline_pid()
+        if predecessor and predecessor != os.getpid():
+            _terminate_speaker(predecessor)
+            _cleanup_session_files(predecessor)
+            _clear_state_if_owned(predecessor)
+        if time.monotonic() >= deadline:
+            raise RuntimeError("another Kokoro playback process would not stop")
+        time.sleep(0.05)
+    _cleanup_orphan_files()
+    _write_state(None)
+    return lock
+
+
+def _install_cancel_handler():
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def cancel(_signum, _frame) -> None:
+        _CANCELLED.set()
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except (ImportError, RuntimeError):
+            pass
+
+    signal.signal(signal.SIGTERM, cancel)
+    return previous
 
 
 def is_paused() -> bool:
@@ -325,6 +528,8 @@ def toggle_playback() -> str:
 
 
 def _play_file(path: str) -> None:
+    if _CANCELLED.is_set():
+        raise PlaybackCancelled
     if IS_MAC or IS_WIN:
         # Keep playback in this long-running process; spawning PowerShell for
         # every chunk (or afplay on macOS) creates audible dead air.
@@ -333,11 +538,17 @@ def _play_file(path: str) -> None:
         samples, sample_rate = sf.read(path, dtype="float32")
         _write_state(os.getpid())
         sd.play(samples, sample_rate, blocking=True)
+        if _CANCELLED.is_set():
+            raise PlaybackCancelled
         return
     else:
         proc = subprocess.Popen(["aplay", path])
     _write_state(proc.pid)
-    proc.wait()
+    while proc.poll() is None:
+        if _CANCELLED.wait(0.05):
+            proc.terminate()
+            proc.wait()
+            raise PlaybackCancelled
 
 
 def notify(message: str) -> None:
@@ -365,7 +576,9 @@ def emit_paths(text: str, voice: str | None, speed: float) -> int:
     print(f"COUNT {len(chunks)}", flush=True)
     for i, chunk in enumerate(chunks):
         try:
-            audio = synthesize(chunk, voice, speed)
+            audio = synthesize(
+                chunk, voice, speed, session_end=i == len(chunks) - 1
+            )
         except urllib.error.HTTPError as e:
             print(f"ERROR Kokoro error {e.code}", flush=True)
             return 2
@@ -373,7 +586,7 @@ def emit_paths(text: str, voice: str | None, speed: float) -> int:
             print(f"ERROR Kokoro unreachable at {HOST}: {e.reason}", flush=True)
             return 2
 
-        path = os.path.join(STATE_DIR, f"kokoro-{os.getpid()}-{i:03d}.wav")
+        path = os.path.join(STATE_DIR, f"kokoro-export-{os.getpid()}-{i:03d}.wav")
         with open(path, "wb") as fh:
             fh.write(audio)
         print(f"CHUNK {path}", flush=True)
@@ -389,71 +602,110 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
         notify("Nothing to speak.")
         return 1
 
-    stop_playback()  # a second press interrupts rather than overlapping
-    _write_state(None)
+    try:
+        playback_lock = _claim_playback()
+    except RuntimeError as error:
+        notify(str(error))
+        return 2
+    _CANCELLED.clear()
+    previous_handler = _install_cancel_handler()
 
     audio_q: "queue.Queue[tuple[int, str | None, str | None]]" = queue.Queue(maxsize=PREFETCH)
     t_start = time.time()
 
+    def deliver(item: tuple[int, str | None, str | None]) -> bool:
+        while not _CANCELLED.is_set():
+            try:
+                audio_q.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
     def producer() -> None:
         for i, chunk in enumerate(chunks):
+            if _CANCELLED.is_set():
+                return
             try:
-                audio = synthesize(chunk, voice, speed)
+                audio = synthesize(
+                    chunk, voice, speed, session_end=i == len(chunks) - 1
+                )
             except urllib.error.HTTPError as e:
-                audio_q.put((i, None, f"Kokoro error {e.code}"))
+                deliver((i, None, f"Kokoro error {e.code}"))
                 return
             except urllib.error.URLError as e:
-                audio_q.put((i, None, f"Kokoro service unreachable at {HOST}: {e.reason}"))
+                deliver((i, None, f"Kokoro service unreachable at {HOST}: {e.reason}"))
                 return
             except Exception as e:  # noqa: BLE001 - producer must never hang the consumer
-                audio_q.put((i, None, str(e)))
+                deliver((i, None, str(e)))
                 return
 
             path = os.path.join(STATE_DIR, f"kokoro-{os.getpid()}-{i:03d}.wav")
+            partial = f"{path}.part"
             try:
-                with open(path, "wb") as fh:
+                with open(partial, "wb") as fh:
                     fh.write(audio)
+                if _CANCELLED.is_set():
+                    os.remove(partial)
+                    return
+                os.replace(partial, path)
             except OSError as e:
-                audio_q.put((i, None, str(e)))
+                deliver((i, None, str(e)))
                 return
-            audio_q.put((i, path, None))
-        audio_q.put((-1, None, None))  # sentinel
+            if not deliver((i, path, None)):
+                return
+        deliver((-1, None, None))  # sentinel
 
-    threading.Thread(target=producer, daemon=True).start()
+    producer_thread = threading.Thread(target=producer, daemon=True)
+    producer_thread.start()
 
     first = True
     played = 0
-    while True:
-        idx, path, err = audio_q.get()
-        if err:
-            notify(err)
-            return 2
-        if idx == -1:
-            break
-        if first:
-            # Signal the UI that synthesis is done and sound is starting, so it
-            # can swap its spinner for the pause control.
-            print("PLAYING", flush=True)
-            if verbose:
-                print(f"time to first audio: {time.time() - t_start:.2f}s "
-                      f"({len(chunks)} chunks)", flush=True)
-            first = False
-        try:
-            _play_file(path)
-            played += 1
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-
+    result = 0
     try:
-        os.remove(STATEFILE)
-    except OSError:
-        pass
-    if verbose:
-        print(f"played {played} chunks in {time.time() - t_start:.2f}s")
-    return 0
+        while not _CANCELLED.is_set():
+            try:
+                idx, path, err = audio_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if err:
+                notify(err)
+                result = 2
+                break
+            if idx == -1:
+                break
+            if first:
+                # Signal the UI that synthesis is done and sound is starting, so it
+                # can swap its spinner for the pause control.
+                print("PLAYING", flush=True)
+                if verbose:
+                    print(f"time to first audio: {time.time() - t_start:.2f}s "
+                          f"({len(chunks)} chunks)", flush=True)
+                first = False
+            try:
+                _play_file(path)
+                played += 1
+            except PlaybackCancelled:
+                break
+            finally:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        if verbose and not _CANCELLED.is_set():
+            print(f"played {played} chunks in {time.time() - t_start:.2f}s")
+        return result
+    finally:
+        was_cancelled = _CANCELLED.is_set()
+        _CANCELLED.set()
+        producer_thread.join(timeout=0.5)
+        if was_cancelled:
+            retire_tts()
+        _cleanup_session_files(os.getpid())
+        _clear_state_if_owned(os.getpid())
+        playback_lock.release()
+        if previous_handler is not None:
+            signal.signal(signal.SIGTERM, previous_handler)
 
 
 def main() -> int:

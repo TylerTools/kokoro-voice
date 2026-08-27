@@ -2,6 +2,7 @@ import importlib.util
 import os
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 
 
@@ -38,6 +39,40 @@ class DictationControlTests(unittest.TestCase):
         for value in ("../escape", "a/b", "", "x" * 81):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.dictate.stopfile(value)
+
+    def test_stdin_stop_control_is_exact_and_session_scoped(self):
+        stop = threading.Event()
+        cancel = threading.Event()
+        self.assertTrue(self.dictate.apply_control_line(
+            '{"command":"stop","session":"one"}', "one", stop, cancel
+        ))
+        self.assertTrue(stop.is_set())
+        self.assertFalse(cancel.is_set())
+
+    def test_stdin_control_rejects_malformed_wrong_or_unknown_records(self):
+        for line in (
+            "not-json",
+            '[]',
+            '{"command":"cancel","session":"two"}',
+            '{"command":"erase","session":"one"}',
+        ):
+            with self.subTest(line=line):
+                stop = threading.Event()
+                cancel = threading.Event()
+                self.assertFalse(
+                    self.dictate.apply_control_line(line, "one", stop, cancel)
+                )
+                self.assertFalse(stop.is_set())
+                self.assertFalse(cancel.is_set())
+
+    def test_stdin_cancel_control_is_exact_and_session_scoped(self):
+        stop = threading.Event()
+        cancel = threading.Event()
+        self.assertTrue(self.dictate.apply_control_line(
+            '{"command":"cancel","session":"one"}', "one", stop, cancel
+        ))
+        self.assertFalse(stop.is_set())
+        self.assertTrue(cancel.is_set())
 
     def test_preview_wav_is_bounded_to_recent_window(self):
         import io
