@@ -5,25 +5,16 @@ on:
     tags: ["v*"]
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14
-            args: --target aarch64-apple-darwin
-            signing_config: ""
-          - os: windows-2022
-            args: --target x86_64-pc-windows-msvc
-            signing_config: --config src-tauri/tauri.windows-signing.json
-    runs-on: ${{ matrix.os }}
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-pc-windows-msvc
+          targets: aarch64-apple-darwin
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -35,27 +26,25 @@ jobs:
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [[ "$RUNNER_OS" == "macOS" && -z "$APPLE_CERTIFICATE" ]]; then exit 1; fi
-          if [[ "$RUNNER_OS" == "Windows" && -z "$WINDOWS_CERTIFICATE" ]]; then exit 1; fi
-      - name: Import Windows signing certificate
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          $pfx = Join-Path $env:RUNNER_TEMP 'kokoro-signing.pfx'
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-          $secure = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $secure
-          $config = @{ bundle = @{ windows = @{
-            certificateThumbprint = $cert.Thumbprint
-            digestAlgorithm = 'sha256'
-            timestampUrl = 'http://timestamp.digicert.com'
-          } } } | ConvertTo-Json -Depth 5
-          Set-Content app/src-tauri/tauri.windows-signing.json $config
+          for name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID
+          do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required secret: ${name}" >&2
+              exit 1
+            fi
+          done
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -65,12 +54,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         with:
           projectPath: app
           tagName: v__VERSION__
           releaseName: Kokoro Voice v__VERSION__
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }} ${{ matrix.signing_config }}
+          releaseDraft: false
+          prerelease: true
+          args: --target aarch64-apple-darwin
