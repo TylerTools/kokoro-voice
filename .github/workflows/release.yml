@@ -1,13 +1,15 @@
 name: Signed release
 
 on:
+  workflow_dispatch:
   push:
     tags: ["v*"]
 
 jobs:
   macos:
     runs-on: macos-14
-    timeout-minutes: 60
+    # Apple notarization can remain queued for well over an hour.
+    timeout-minutes: 120
     permissions:
       contents: write
     steps:
