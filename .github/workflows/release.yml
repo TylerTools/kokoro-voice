@@ -70,3 +70,35 @@ jobs:
           releaseDraft: false
           prerelease: true
           args: --target aarch64-apple-darwin
+      - name: Notarize and verify disk image
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          shopt -s nullglob
+          dmg_files=(app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          if [[ ${#dmg_files[@]} -ne 1 ]]; then
+            echo "Expected exactly one disk image; found ${#dmg_files[@]}" >&2
+            exit 1
+          fi
+
+          dmg_path="${dmg_files[0]}"
+          xcrun notarytool submit "$dmg_path" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$dmg_path"
+          xcrun stapler validate "$dmg_path"
+          spctl -a -vv -t install "$dmg_path"
+      - name: Replace release disk image with notarized copy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          dmg_files=(app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          release_version="$(node -p "require('./app/src-tauri/tauri.conf.json').version")"
+          gh release upload "v${release_version}" "${dmg_files[0]}" --clobber
