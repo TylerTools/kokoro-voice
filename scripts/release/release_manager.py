@@ -269,18 +269,24 @@ def latest_runtime_readiness(
 def wait_for_runtime_readiness(
     config: dict,
     *,
+    app: Path,
     expected_version: str,
     process_ids: set[int],
     not_before_ms: int,
 ) -> None:
     deadline = time.monotonic() + float(config["accessibility_timeout"])
     latest = None
+    observed_process_ids = set(process_ids)
     event_file = Path(config["config"]) / "events.jsonl"
     while time.monotonic() < deadline:
+        # macOS can require Quit & Reopen after a privacy change. Follow only
+        # processes launched from the newly installed bundle so that restart is
+        # part of the same verified transaction without accepting stale logs.
+        observed_process_ids.update(app_pids(app))
         latest = latest_runtime_readiness(
             event_file,
             expected_version=expected_version,
-            process_ids=process_ids,
+            process_ids=observed_process_ids,
             not_before_ms=not_before_ms,
         )
         if latest and all(
@@ -345,6 +351,7 @@ def launch_and_check(app: Path, config: dict, expected_version: str | None = Non
     if not config["skip_accessibility"] and expected_version is not None:
         wait_for_runtime_readiness(
             config,
+            app=app,
             expected_version=expected_version,
             process_ids=process_ids,
             not_before_ms=launched_after_ms,
@@ -428,7 +435,7 @@ def promote(
         previous_slot = swap_apps(stable, staged)
         launch_config = {
             **config,
-            "accessibility_timeout": 180
+            "accessibility_timeout": 600
             if allow_signing_transition
             else config["accessibility_timeout"],
         }

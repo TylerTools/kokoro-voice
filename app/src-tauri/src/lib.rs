@@ -2357,8 +2357,11 @@ fn start_permission_readiness_watcher(app: AppHandle) {
         return;
     }
     std::thread::spawn(move || {
-        for _ in 0..180 {
-            std::thread::sleep(std::time::Duration::from_secs(1));
+        loop {
+            // Privacy approval may include a macOS-required restart or the user
+            // may return much later. Keep this low-cost watcher alive instead
+            // of silently giving up after three minutes.
+            std::thread::sleep(std::time::Duration::from_secs(2));
             if QUITTING.load(Ordering::SeqCst) {
                 return;
             }

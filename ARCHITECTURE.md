@@ -253,6 +253,25 @@ speaker files, refuses symlinks and unknown files, and applies an age gate.
 Stable alone may clean its legacy runtime namespace; Candidate cannot touch it.
 Operational logs are bounded to one current and one previous hotkey log.
 
+### Guided first-run and permission setup
+
+The settings window presents setup as one resumable transaction rather than
+separate download, permission, and verification chores. A single **Finish
+setup** action installs the local models, requests Accessibility, opens the
+exact macOS pane only when the native request remains unresolved, detects the
+grant, advances to Input Monitoring, and registers shortcuts when both grants
+are available. The in-progress marker lives in the settings webview's local
+storage so a macOS-required **Quit & Reopen** resumes the same transaction.
+Microphone and Screen Recording remain just-in-time approvals because opening
+those protected devices is itself the honest capability test.
+
+The desktop host keeps a low-frequency permission watcher alive until startup
+readiness succeeds; it does not abandon setup after an arbitrary timeout. The
+release manager likewise admits fresh readiness evidence from a replacement
+process launched from the newly installed bundle, while retaining version,
+timestamp, and bundle-path checks so a restart cannot accidentally accept an
+old release's log entry.
+
 ## Release channels and rollback
 
 Stable and Candidate are separate installed products. Stable retains bundle ID

@@ -9,6 +9,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
+import {
+  nextSetupStep,
+  permissionReady,
+  type PermissionState,
+  type SetupReport,
+  type SetupStep,
+} from "./setup_flow";
 
 type Health = {
   status: string;
@@ -58,15 +65,12 @@ async function refresh(): Promise<void> {
   statusEl.classList.remove("status--ok", "status--warn", "status--down", "status--unknown");
 
   // Not installed is a first-run state, not a failure — show setup, not an error.
-  const setup = document.getElementById("setup") as HTMLElement;
   if (h.status === "not-installed") {
-    setup.hidden = false;
     statusEl.classList.add("status--warn");
     statusText.textContent = "Setup needed";
-    detail.textContent = "Download the voices to get started.";
+    detail.textContent = "Use Finish setup below. Kokoro will guide the rest.";
     return;
   }
-  setup.hidden = true;
 
   if (h.status === "ok" && h.stt_ready) {
     statusEl.classList.add("status--ok");
@@ -113,43 +117,9 @@ document.querySelectorAll<HTMLButtonElement>("button[data-cmd]").forEach((btn) =
   });
 });
 
-document.getElementById("open-accessibility")?.addEventListener("click", async () => {
-  await invoke("retry_permission", { capability: "accessibility" });
-  await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
-});
-
-document.getElementById("open-input-monitoring")?.addEventListener("click", async () => {
-  await invoke("retry_permission", { capability: "input-monitoring" });
-  await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
-});
-
 document.getElementById("export-diagnostics")?.addEventListener("click", async () => {
   const path = await invoke<string>("export_diagnostics");
   detail.textContent = `Diagnostics saved to ${path}`;
-});
-
-document.getElementById("run-system-check")?.addEventListener("click", async (event) => {
-  const button = event.currentTarget as HTMLButtonElement;
-  button.disabled = true;
-  detail.textContent = "Checking engine, permissions, hotkeys, and microphone…";
-  try {
-    const report = await invoke<Record<string, unknown>>("system_check");
-    const permissions = report.permissions as Record<string, string>;
-    const engine = report.engine as Record<string, string>;
-    if (engine.status !== "ok") {
-      detail.textContent = "The speech engine is not ready. Export diagnostics for details.";
-    } else if (permissions.accessibility !== "available") {
-      detail.textContent = "Accessibility is off. Enable Kokoro Voice, then run this check again.";
-    } else if (permissions.input_monitoring !== "available") {
-      detail.textContent = "Input Monitoring is off. Enable Kokoro Voice, then run this check again.";
-    } else {
-      detail.textContent = "System check passed. Shortcuts are listening.";
-    }
-  } catch (error) {
-    detail.textContent = `System check failed: ${error}`;
-  } finally {
-    button.disabled = false;
-  }
 });
 
 invoke<{
@@ -176,7 +146,124 @@ document.getElementById("remove-local-data")?.addEventListener("click", async ()
   window.location.reload();
 });
 
-// Live setup progress from Rust.
+// One guided setup transaction. macOS still owns its protected approval
+// switches; Kokoro requests each one, opens the exact pane, detects the grant,
+// advances to the next step, and resumes after a required app restart.
+const GUIDED_SETUP_KEY = "kokoro-guided-setup-active";
+const setupCard = document.getElementById("setup") as HTMLElement;
+const setupButton = document.getElementById("setup-go") as HTMLButtonElement;
+const setupMessage = document.getElementById("setup-msg") as HTMLElement;
+const setupCancel = document.getElementById("setup-cancel") as HTMLButtonElement;
+let guidedSetupActive = localStorage.getItem(GUIDED_SETUP_KEY) === "1";
+let setupReport: SetupReport | null = null;
+let requestedStep: SetupStep | null = null;
+let setupRefreshInFlight = false;
+let setupEffectInFlight = false;
+
+function setSetupActive(active: boolean): void {
+  guidedSetupActive = active;
+  if (active) localStorage.setItem(GUIDED_SETUP_KEY, "1");
+  else localStorage.removeItem(GUIDED_SETUP_KEY);
+}
+
+function renderPermissionState(id: string, state: PermissionState | undefined): void {
+  const element = document.getElementById(id);
+  if (!element) return;
+  const ready = permissionReady(state);
+  element.textContent = ready ? "Ready" : state === "checked-on-use" ? "Asked on first use" : "Needs approval";
+  element.classList.toggle("setup-state--ready", ready);
+  element.classList.toggle("setup-state--needed", !ready && state !== "checked-on-use");
+}
+
+function renderSetup(report: SetupReport): SetupStep {
+  const step = nextSetupStep(report);
+  const engineReady = report.offline_ready && report.engine.status === "ok";
+  const engineState = document.getElementById("setup-state-engine") as HTMLElement;
+  engineState.textContent = engineReady ? "Ready" : report.offline_ready ? "Starting…" : "Not installed";
+  engineState.classList.toggle("setup-state--ready", engineReady);
+  engineState.classList.toggle("setup-state--needed", !engineReady);
+  renderPermissionState("setup-state-accessibility", report.permissions.accessibility);
+  renderPermissionState("setup-state-input", report.permissions.input_monitoring);
+  renderPermissionState("privacy-accessibility", report.permissions.accessibility);
+  renderPermissionState("privacy-input", report.permissions.input_monitoring);
+  renderPermissionState("privacy-microphone", report.permissions.microphone);
+  renderPermissionState("privacy-screen", report.permissions.screen_capture);
+
+  setupCard.hidden = step === "complete";
+  setupButton.hidden = step === "complete";
+  setupButton.disabled = step === "engine-starting" || setupEffectInFlight;
+  const labels: Record<SetupStep, string> = {
+    download: "Download & finish setup",
+    "engine-starting": "Starting…",
+    accessibility: "Continue in Accessibility",
+    "input-monitoring": "Continue in Input Monitoring",
+    complete: "Setup complete",
+  };
+  setupButton.textContent = labels[step];
+  if (step === "complete") {
+    setSetupActive(false);
+    setupMessage.textContent = "";
+  } else if (!guidedSetupActive && !setupEffectInFlight) {
+    setupMessage.textContent = "One button starts setup. Kokoro detects each approval automatically.";
+  }
+  return step;
+}
+
+async function advanceGuidedSetup(report: SetupReport): Promise<void> {
+  if (!guidedSetupActive || setupEffectInFlight) return;
+  const step = nextSetupStep(report);
+  if (step === "download" || step === "engine-starting" || step === "complete" || requestedStep === step) return;
+  setupEffectInFlight = true;
+  requestedStep = step;
+  try {
+    if (step === "accessibility") {
+      setupMessage.textContent = "Turn on Kokoro Voice in Accessibility. This page will continue automatically.";
+      const result = await invoke<{ available?: boolean }>("retry_permission", { capability: "accessibility" });
+      if (!result.available) {
+        await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+      } else {
+        requestedStep = null;
+        window.setTimeout(() => { void refreshSetup(true); }, 0);
+      }
+    } else if (step === "input-monitoring") {
+      setupMessage.textContent = "Turn on Kokoro Voice in Input Monitoring. Kokoro will finish when macOS confirms it.";
+      const result = await invoke<{ available?: boolean }>("retry_permission", { capability: "input-monitoring" });
+      if (!result.available) {
+        await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
+      } else {
+        requestedStep = null;
+        window.setTimeout(() => { void refreshSetup(true); }, 0);
+      }
+    }
+  } catch (error) {
+    requestedStep = null;
+    setupMessage.textContent = `Setup could not continue: ${error}`;
+  } finally {
+    setupEffectInFlight = false;
+    if (setupReport) renderSetup(setupReport);
+  }
+}
+
+async function refreshSetup(advance = guidedSetupActive): Promise<void> {
+  if (setupRefreshInFlight) return;
+  setupRefreshInFlight = true;
+  try {
+    setupReport = await invoke<SetupReport>("system_check");
+    const step = renderSetup(setupReport);
+    if (step === "complete") {
+      detail.textContent = "Kokoro is ready. Shortcuts are listening.";
+    } else if (advance) {
+      await advanceGuidedSetup(setupReport);
+    }
+  } catch (error) {
+    setupCard.hidden = false;
+    setupMessage.textContent = `Kokoro could not verify setup: ${error}`;
+  } finally {
+    setupRefreshInFlight = false;
+  }
+}
+
+// Live engine-install progress from Rust.
 listen<{ pct: number; message: string }>("setup-progress", (e) => {
   const wrap = document.getElementById("bar-wrap") as HTMLElement;
   const bar = document.getElementById("bar") as HTMLElement;
@@ -188,29 +275,38 @@ listen<{ pct: number; message: string }>("setup-progress", (e) => {
 
 document.getElementById("setup-go")?.addEventListener("click", async (ev) => {
   const btn = ev.currentTarget as HTMLButtonElement;
-  const msg = document.getElementById("setup-msg") as HTMLElement;
+  requestedStep = null;
+  setSetupActive(true);
+  if (!setupReport) await refreshSetup(false);
+  if (!setupReport) return;
+  const step = nextSetupStep(setupReport);
+  if (step !== "download") {
+    await advanceGuidedSetup(setupReport);
+    return;
+  }
   btn.disabled = true;
-  const cancel = document.getElementById("setup-cancel") as HTMLButtonElement;
-  cancel.hidden = false;
+  setupCancel.hidden = false;
   btn.textContent = "Installing…";
   try {
     await invoke("setup_engine");
-    msg.textContent = "Done. Starting up…";
+    setupMessage.textContent = "Models installed. Starting Kokoro…";
   } catch (e) {
     // Setup is resumable, so say so rather than leaving a dead end.
-    msg.textContent = `${e} — press Retry to pick up where it stopped.`;
+    setupMessage.textContent = `${e} — press Retry to pick up where it stopped.`;
     btn.disabled = false;
-    cancel.hidden = true;
+    setupCancel.hidden = true;
     btn.textContent = "Retry";
     return;
   }
-  cancel.hidden = true;
-  setTimeout(refresh, 1500);
+  setupCancel.hidden = true;
+  requestedStep = null;
+  await refreshSetup(true);
 });
 
 document.getElementById("setup-cancel")?.addEventListener("click", async (ev) => {
   (ev.currentTarget as HTMLButtonElement).disabled = true;
   await invoke("cancel_setup");
+  setSetupActive(false);
 });
 
 // Show the real hotkeys rather than hardcoding them in the markup.
@@ -248,7 +344,7 @@ invoke<HotkeyResponse>("hotkeys").then((hk) => {
     btn.hidden = binding ? !binding.configurable : false;
   });
   if (Object.values(hk.bindings).some((binding) => !binding.registered)) {
-    detail.textContent = "Shortcuts are off. Run System Check and enable the permission it names.";
+    detail.textContent = "Shortcuts need setup. Use Finish setup above; Kokoro will detect the approvals.";
   }
 });
 
@@ -515,9 +611,17 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
 
 initPrefs();
 refresh();
+void refreshSetup();
 setInterval(() => {
-  if (document.visibilityState === "visible") void refresh();
+  if (document.visibilityState === "visible") {
+    void refresh();
+    void refreshSetup();
+  }
 }, 4000);
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") void refresh();
+  if (document.visibilityState === "visible") {
+    void refresh();
+    void refreshSetup();
+  }
 });
+window.addEventListener("focus", () => { void refreshSetup(); });

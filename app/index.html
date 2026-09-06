@@ -18,15 +18,21 @@
     </header>
 
     <section id="setup" class="card setup" hidden>
-      <h3>One-time setup</h3>
+      <h3>Finish setup</h3>
       <p id="setup-intro">
-        Kokoro Voice 2.1 needs to download its voices and speech recognition before
-        first use — up to about 2&nbsp;GB depending on platform. It only happens once, and everything is
-        stored on this computer.
+        Kokoro handles the download and checks each required macOS approval. Apple
+        requires you to turn on protected access, but Kokoro opens the right page
+        and continues automatically afterward. The local models use up to about
+        2&nbsp;GB depending on the platform.
       </p>
+      <ol class="setup-steps">
+        <li><span>Local speech models</span><strong id="setup-state-engine">Checking…</strong></li>
+        <li><span>Accessibility</span><strong id="setup-state-accessibility">Checking…</strong></li>
+        <li><span>Global shortcuts</span><strong id="setup-state-input">Checking…</strong></li>
+      </ol>
       <div class="bar" hidden id="bar-wrap"><div class="bar-fill" id="bar"></div></div>
-      <p class="setup-msg" id="setup-msg"></p>
-      <button id="setup-go">Download &amp; install</button>
+      <p class="setup-msg" id="setup-msg" aria-live="polite"></p>
+      <button id="setup-go">Finish setup</button>
       <button class="ghost" id="setup-cancel" hidden>Cancel</button>
     </section>
 
@@ -132,22 +138,19 @@
       </div>
     </section>
 
-    <h2>Permissions</h2>
+    <h2>Privacy</h2>
     <section class="card">
       <p>
-        macOS asks before any app can see what you have selected, hear your
-        microphone, or read your screen. You'll be prompted the first time you
-        use each feature. To change an answer later:
+        macOS keeps these approvals under your control. Kokoro checks them
+        automatically; microphone and screen access are requested only when you
+        first use those features.
       </p>
-      <ul class="perms">
-        <li><strong>Accessibility</strong> — read the selected text, type dictation</li>
-        <li><strong>Input Monitoring</strong> — receive global shortcuts</li>
-        <li><strong>Microphone</strong> — dictation</li>
-        <li><strong>Screen Recording</strong> — snip &amp; read</li>
+      <ul class="perms permission-statuses">
+        <li><span><strong>Accessibility</strong> — selection and dictation</span><em id="privacy-accessibility">Checking…</em></li>
+        <li><span><strong>Input Monitoring</strong> — global shortcuts</span><em id="privacy-input">Checking…</em></li>
+        <li><span><strong>Microphone</strong> — dictation</span><em id="privacy-microphone">On first use</em></li>
+        <li><span><strong>Screen Recording</strong> — snip &amp; read</span><em id="privacy-screen">On first use</em></li>
       </ul>
-      <button class="ghost" id="open-accessibility">Open Accessibility</button>
-      <button class="ghost" id="open-input-monitoring">Open Input Monitoring</button>
-      <button class="ghost" id="run-system-check">Run system check</button>
     </section>
 
     <h2>Storage</h2>

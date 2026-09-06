@@ -255,6 +255,39 @@ class ReleaseWorkflowTests(unittest.TestCase):
             )
         )
 
+    def test_readiness_wait_follows_a_macos_permission_restart(self):
+        event_file = self.config_dir / "events.jsonl"
+        event_file.parent.mkdir(parents=True)
+        event_file.write_text(
+            json.dumps(
+                {
+                    "timestamp_ms": 2000,
+                    "event": "runtime-readiness",
+                    "app_version": "2.1.1-beta.1",
+                    "process_id": 456,
+                    "fields": {
+                        "ready": True,
+                        "accessibility": True,
+                        "input_monitoring": True,
+                        "hotkeys_registered": True,
+                    },
+                }
+            )
+            + "\n"
+        )
+        previous_app_pids = release_manager.app_pids
+        release_manager.app_pids = lambda _app: [456]
+        try:
+            release_manager.wait_for_runtime_readiness(
+                self.runtime,
+                app=self.stable,
+                expected_version="2.1.1-beta.1",
+                process_ids={123},
+                not_before_ms=1000,
+            )
+        finally:
+            release_manager.app_pids = previous_app_pids
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -117,6 +117,13 @@ kbd {
 
 .perms { margin: 10px 0 14px; padding-left: 18px; color: var(--muted); font-size: 13px; }
 .perms strong { color: var(--ink); }
+.permission-statuses { list-style: none; padding: 0; }
+.permission-statuses li,
+.setup-steps li { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+.permission-statuses em,
+.setup-steps strong { color: var(--muted); font-size: 12px; font-style: normal; white-space: nowrap; }
+.setup-state--ready { color: var(--ok) !important; }
+.setup-state--needed { color: var(--warn) !important; }
 
 /* ── controls ────────────────────────────────────────────────────────────── */
 .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
@@ -171,6 +178,9 @@ footer a:hover { text-decoration: underline; }
 /* ── first-run setup ─────────────────────────────────────────────────────── */
 .setup { border-left: 3px solid var(--accent); }
 .setup h3 { margin-bottom: 8px; }
+.setup-steps { margin: 14px 0; padding: 0; list-style: none; }
+.setup-steps li { padding: 7px 0; border-bottom: 1px solid var(--line); }
+.setup-steps li:last-child { border-bottom: 0; }
 .bar {
   height: 6px; border-radius: 3px; background: var(--line);
   overflow: hidden; margin: 14px 0 8px;
