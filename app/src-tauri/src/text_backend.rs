@@ -47,6 +47,7 @@ pub enum ApplyOutcome {
 }
 
 pub trait TextBackend {
+    #[cfg(target_os = "macos")]
     fn selected_text() -> Result<Option<String>, ApplyOutcome>;
     fn capture_target() -> Result<TargetSnapshot, ApplyOutcome>;
     fn apply_revision(
@@ -574,10 +575,6 @@ mod platform {
     };
 
     impl TextBackend for PlatformTextBackend {
-        fn selected_text() -> Result<Option<String>, ApplyOutcome> {
-            Err(ApplyOutcome::ClipboardFallback("clipboard-only".into()))
-        }
-
         fn capture_target() -> Result<TargetSnapshot, ApplyOutcome> {
             // Block password controls with native UI Automation. Other Windows
             // controls remain clipboard-only until TextPattern range ownership
@@ -615,10 +612,6 @@ mod platform {
 mod platform {
     use super::*;
     impl TextBackend for PlatformTextBackend {
-        fn selected_text() -> Result<Option<String>, ApplyOutcome> {
-            Err(ApplyOutcome::Unavailable)
-        }
-
         fn capture_target() -> Result<TargetSnapshot, ApplyOutcome> {
             Err(ApplyOutcome::Unavailable)
         }

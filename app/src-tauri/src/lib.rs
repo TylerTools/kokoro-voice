@@ -14,6 +14,7 @@ mod dictation_protocol;
 mod hotkeys;
 mod playback;
 mod preferences;
+#[cfg(any(target_os = "macos", test))]
 mod read_action;
 mod runtime;
 mod runtime_hygiene;
@@ -29,7 +30,9 @@ use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::Condvar;
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 use runtime::active_source_root;
