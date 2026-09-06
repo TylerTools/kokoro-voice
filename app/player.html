@@ -14,30 +14,39 @@
         display: flex; align-items: center;
         height: calc(100% - 8px); margin: 3px 4px 5px;
         box-sizing: border-box; position: relative; overflow: hidden;
-        background: rgba(31, 33, 31, .96);
-        border: 1px solid rgba(255,255,255,.16);
-        border-radius: 14px;
-        box-shadow: 0 4px 12px rgba(0,0,0,.30);
+        background: linear-gradient(145deg, rgba(52, 58, 54, .78), rgba(19, 23, 20, .74));
+        border: 1px solid rgba(255,255,255,.18);
+        border-radius: 17px;
+        box-shadow:
+          0 10px 28px rgba(0,0,0,.34),
+          inset 0 1px 0 rgba(255,255,255,.12);
+        -webkit-backdrop-filter: saturate(175%) blur(24px);
+        backdrop-filter: saturate(175%) blur(24px);
         font: 15px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
       }
       button {
         flex: 1; height: 100%; border: 0; background: transparent; z-index: 1;
         color: rgba(255,255,255,0.95); font-size: 15px; cursor: pointer;
-        transition: background 120ms ease, color 120ms ease;
+        transition: background 120ms ease, color 120ms ease, transform 120ms ease;
       }
-      button:hover { background: rgba(255,255,255,.08); }
-      button:active { background: rgba(0,0,0,.18); }
-      #toggle { border-radius: 13px 0 0 13px; color: #63c3bd; }
-      #stop { border-radius: 0 13px 13px 0; }
+      button:hover { background: rgba(255,255,255,.1); }
+      button:active { background: rgba(0,0,0,.16); transform: scale(.96); }
+      button:focus-visible { outline: 2px solid rgba(119, 211, 199, .72); outline-offset: -3px; }
+      #toggle { border-radius: 16px 0 0 16px; color: #78d2c8; }
+      #stop { border-radius: 0 16px 16px 0; }
       #stop { color: rgba(255,255,255,0.68); font-size: 22px; font-weight: 300; }
-      #stop:hover { color: #ff8b86; }
+      #stop:hover { color: #ff9b95; }
       /* Recording is a distinct state, not a variant of playing: the controls
          do not apply, so they are replaced rather than restyled. */
       #rec { display: none; flex: 1; align-items: center; justify-content: center;
              align-self: stretch; gap: 8px; color: #fff; font-size: 12.5px; z-index: 1;
              text-shadow: 0 1px 1px rgba(0,0,0,.85); }
       body.recording #bar {
-        border-color: rgba(255, 98, 91, .45);
+        border-color: rgba(255, 112, 102, .48);
+        box-shadow:
+          0 10px 28px rgba(0,0,0,.34),
+          0 0 22px rgba(255, 98, 91, .09),
+          inset 0 1px 0 rgba(255,255,255,.12);
       }
       #rec .mic { width: 17px; height: 17px; color: #ff625b; overflow: visible; }
       #rec .pulse { transform-origin: center; animation: pulse 1.15s ease-out infinite; }
@@ -64,7 +73,7 @@
       body.notice #toggle, body.notice #sep, body.notice #stop, body.notice #rec { display: none; }
       body.notice #notice { display: flex; }
       body.notice #bar {
-        border-color: rgba(233, 182, 92, .45);
+        border-color: rgba(233, 182, 92, .48);
       }
       #sep { width: 1px; height: 20px; background: rgba(255,255,255,0.18); }
       /* Drag handles flank the buttons so the panel can be moved without a
