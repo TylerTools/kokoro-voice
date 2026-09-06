@@ -2,9 +2,14 @@ import importlib.util
 import json
 import plistlib
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+
+if sys.platform != "darwin":
+    raise unittest.SkipTest("the release manager is macOS-only")
 
 
 REPO = Path(__file__).resolve().parents[1]
