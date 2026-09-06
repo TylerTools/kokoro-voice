@@ -36,7 +36,7 @@ pub(crate) fn decide(
         },
         Err(_) => Decision::Notice {
             code: "selection-unavailable",
-            message: "Kokoro could not read that selection — run System Check",
+            message: "Can't access this selection. Open Settings.",
         },
     }
 }

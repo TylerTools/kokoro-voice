@@ -68,28 +68,28 @@ async function refresh(): Promise<void> {
   if (h.status === "not-installed") {
     statusEl.classList.add("status--warn");
     statusText.textContent = "Setup needed";
-    detail.textContent = "Use Finish setup below. Kokoro will guide the rest.";
+    statusEl.title = "Finish setup to enable Kokoro.";
     return;
   }
 
   if (h.status === "ok" && h.stt_ready) {
     statusEl.classList.add("status--ok");
     statusText.textContent = "Ready";
-    detail.textContent = h.stt_warm
+    statusEl.title = h.stt_warm
       ? `${h.voices ?? 0} voices · speech recognition ready`
       : `${h.voices ?? 0} voices · speech recognition ready on demand`;
   } else if (h.status === "ok") {
     statusEl.classList.add("status--warn");
-    statusText.textContent = "Dictation needs attention";
-    detail.textContent = "Reading works; speech recognition will retry on the next dictation.";
+    statusText.textContent = "Dictation retrying";
+    statusEl.title = "Reading works. Dictation will retry when used.";
   } else if (h.status === "starting") {
     statusEl.classList.add("status--warn");
     statusText.textContent = "Starting…";
-    detail.textContent = "Loading the voices. This takes a few seconds after launch.";
+    statusEl.title = "Loading local voices.";
   } else {
     statusEl.classList.add("status--down");
     statusText.textContent = "Not running";
-    detail.textContent = "The engine isn't responding. Quit and reopen Kokoro Voice.";
+    statusEl.title = "Quit and reopen Kokoro Voice.";
   }
 }
 
@@ -107,7 +107,7 @@ document.querySelectorAll<HTMLButtonElement>("button[data-cmd]").forEach((btn) =
       } else {
         await invoke(cmd);
       }
-      btn.textContent = "✓";
+      btn.textContent = "Done";
       setTimeout(() => (btn.textContent = original), 900);
     } catch (e) {
       btn.textContent = "failed";
@@ -184,10 +184,6 @@ function renderSetup(report: SetupReport): SetupStep {
   engineState.classList.toggle("setup-state--needed", !engineReady);
   renderPermissionState("setup-state-accessibility", report.permissions.accessibility);
   renderPermissionState("setup-state-input", report.permissions.input_monitoring);
-  renderPermissionState("privacy-accessibility", report.permissions.accessibility);
-  renderPermissionState("privacy-input", report.permissions.input_monitoring);
-  renderPermissionState("privacy-microphone", report.permissions.microphone);
-  renderPermissionState("privacy-screen", report.permissions.screen_capture);
 
   setupCard.hidden = step === "complete";
   setupButton.hidden = step === "complete";
@@ -204,7 +200,7 @@ function renderSetup(report: SetupReport): SetupStep {
     setSetupActive(false);
     setupMessage.textContent = "";
   } else if (!guidedSetupActive && !setupEffectInFlight) {
-    setupMessage.textContent = "One button starts setup. Kokoro detects each approval automatically.";
+    setupMessage.textContent = "Kokoro continues as soon as each approval is on.";
   }
   return step;
 }
@@ -249,9 +245,10 @@ async function refreshSetup(advance = guidedSetupActive): Promise<void> {
   setupRefreshInFlight = true;
   try {
     setupReport = await invoke<SetupReport>("system_check");
+    const wasGuided = guidedSetupActive;
     const step = renderSetup(setupReport);
-    if (step === "complete") {
-      detail.textContent = "Kokoro is ready. Shortcuts are listening.";
+    if (step === "complete" && wasGuided) {
+      detail.textContent = "Setup complete.";
     } else if (advance) {
       await advanceGuidedSetup(setupReport);
     }
@@ -348,37 +345,21 @@ invoke<HotkeyResponse>("hotkeys").then((hk) => {
   }
 });
 
-let testingDictation = false;
 listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
-  if (e.payload.state === "starting") {
-    testingDictation = document.activeElement?.id === "dictation-test";
-  }
   const messages: Record<DictationState, string> = {
     starting: "Opening microphone…",
     recording: "Listening…",
     transcribing: "Transcribing locally…",
-    completed: "Dictation inserted and copied to the clipboard.",
+    completed: "Dictation complete.",
     cancelled: "Dictation cancelled.",
     "permission-denied": "Microphone permission denied. Open Privacy & Security.",
     "device-unavailable": "The selected microphone is unavailable.",
     "timed-out": "The microphone did not open in time.",
-    "live-typing": "Typing the local transcript…",
-    "clipboard-fallback": "The transcript was copied because the target could not be verified.",
+    "live-typing": "Typing…",
+    "clipboard-fallback": "Copied. Press Command+V to paste.",
     "cancelled-by-user": "Dictation cancelled.",
   };
   detail.textContent = messages[e.payload.state];
-});
-
-listen<string>("dictated", async () => {
-  const test = document.getElementById("dictation-test") as HTMLTextAreaElement;
-  if (!testingDictation || !test || !test.value.trim()) return;
-  testingDictation = false;
-  const status = document.getElementById("dictation-test-status") as HTMLElement;
-  await invoke("record_capability", { capability: "dictation-insertion", passed: true });
-  await invoke("set_prefs", { livePreview: true });
-  const toggle = document.getElementById("live-preview") as HTMLInputElement;
-  if (toggle) toggle.checked = true;
-  status.textContent = "Dictation passed. Live typing is enabled.";
 });
 
 // ── voice & speed ───────────────────────────────────────────────────────────
@@ -390,10 +371,13 @@ async function initPrefs() {
   const cueEnabled = document.getElementById("cue-enabled") as HTMLInputElement;
   const cueVolume = document.getElementById("cue-volume") as HTMLInputElement;
   const cueVolumeLabel = document.getElementById("cue-volume-label") as HTMLOutputElement;
+  const cueVolumeRow = document.getElementById("cue-volume-row") as HTMLElement;
   cueEnabled.checked = prefs.cue_enabled !== false;
+  cueVolumeRow.hidden = !cueEnabled.checked;
   cueVolume.value = String(Math.round((prefs.cue_volume ?? 0.22) * 100));
   cueVolumeLabel.value = `${cueVolume.value}%`;
   cueEnabled.onchange = () => {
+    cueVolumeRow.hidden = !cueEnabled.checked;
     void invoke("set_prefs", { cueEnabled: cueEnabled.checked });
   };
   cueVolume.oninput = () => {

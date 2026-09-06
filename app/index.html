@@ -3,27 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Kokoro Voice 2.1</title>
+    <title>Kokoro Voice</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
     <header>
       <div class="brand">
-        <h1>Kokoro Voice 2.1</h1>
-        <p class="sub">Read aloud, dictation, and screen OCR — all on this machine.</p>
+        <h1>Kokoro Voice</h1>
       </div>
       <div id="status" class="status status--unknown">
         <span class="dot"></span><span id="status-text">checking…</span>
       </div>
     </header>
+    <div id="detail" class="inline-message" aria-live="polite"></div>
 
     <section id="setup" class="card setup" hidden>
       <h3>Finish setup</h3>
       <p id="setup-intro">
-        Kokoro handles the download and checks each required macOS approval. Apple
-        requires you to turn on protected access, but Kokoro opens the right page
-        and continues automatically afterward. The local models use up to about
-        2&nbsp;GB depending on the platform.
+        Download the local models, then approve two macOS settings. Kokoro opens
+        each one and checks it automatically.
       </p>
       <ol class="setup-steps">
         <li><span>Local speech models</span><strong id="setup-state-engine">Checking…</strong></li>
@@ -36,69 +34,27 @@
       <button class="ghost" id="setup-cancel" hidden>Cancel</button>
     </section>
 
-    <section class="card private">
-      <strong>Nothing leaves this computer.</strong>
-      The voices and the speech recognition run locally. There is no account and
-      no API key, and once installed the engine makes no network calls at all.
-    </section>
-
-    <section class="card" id="dictation-test-card">
-      <h3>Test dictation</h3>
-      <p>Click below, hold your dictation shortcut, speak, and release. A successful test enables live typing.</p>
-      <textarea id="dictation-test" rows="3" placeholder="Your test dictation will appear here"></textarea>
-      <small id="dictation-test-status">Live typing remains off until this test succeeds.</small>
-    </section>
-
-    <h2>What it does</h2>
-
-    <section class="card feature">
-      <div class="feature-head">
-        <h3>Read aloud</h3>
-        <button class="rec" data-rec="read">Record…</button><kbd id="key-read">⌃⌘</kbd>
-      </div>
-      <p>
-        Select text in any app and press the key. Press again with something
-        <em>new</em> selected to switch to it; press with nothing new selected to
-        pause and resume.
-      </p>
-      <div class="row">
-        <button data-cmd="read_selection">Read my selection now</button>
-        <button class="ghost" data-cmd="stop_speaking">Stop</button>
-      </div>
-    </section>
-
-    <section class="card feature">
-      <div class="feature-head">
-        <h3>Dictate</h3>
-        <button class="rec" data-rec="dictate">Record…</button><kbd id="key-dictate">⇧⌘</kbd>
-      </div>
-      <p>
-        Hold the key, speak, then let go. What you said is typed into whatever
-         you were working in, and also copied to the clipboard as a backup — that
-         way it is recoverable if the focused app rejects synthetic typing.
-      </p>
-      <p class="perm">Needs <strong>Microphone</strong> permission.</p>
-    </section>
-
-    <section class="card feature">
-      <div class="feature-head">
-        <h3>Snip &amp; read</h3>
-        <button class="rec" data-rec="snip">Record…</button><kbd id="key-snip">F7</kbd>
-      </div>
-      <p>
-        Press the key and drag a box around anything on screen — it gets read to
-        you. This is for text you <em>can't</em> select: pictures, PDFs, video
-        frames, screenshots someone sent you. The screenshot is deleted the
-        moment the words are pulled out of it.
-      </p>
-      <div class="row">
-        <button data-cmd="snip_and_read">Try a snip now</button>
-      </div>
-      <p class="perm">Needs <strong>Screen Recording</strong> permission.</p>
-    </section>
-
-    <h2>Voice &amp; speed</h2>
     <section class="card">
+      <h2>Shortcuts</h2>
+      <div class="shortcut-row">
+        <span><strong>Read</strong><small>Selected text</small></span>
+        <kbd id="key-read">⌃⌘</kbd>
+        <button class="rec" data-rec="read">Change</button>
+      </div>
+      <div class="shortcut-row">
+        <span><strong>Dictate</strong><small>Hold while speaking</small></span>
+        <kbd id="key-dictate">⇧⌘</kbd>
+        <button class="rec" data-rec="dictate">Change</button>
+      </div>
+      <div class="shortcut-row">
+        <span><strong>Snip</strong><small>Read text from the screen</small></span>
+        <kbd id="key-snip">F7</kbd>
+        <button class="rec" data-rec="snip">Change</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Voice &amp; dictation</h2>
       <label class="field">
         <span>Microphone</span>
         <select id="microphone"><option value="">System default</option></select>
@@ -114,57 +70,42 @@
       </label>
 
       <label class="field">
-        <span><input id="cue-enabled" type="checkbox" /> Dictation sound cues</span>
-        <div class="row">
+        <span class="check-label"><input id="cue-enabled" type="checkbox" /> Sound cues</span>
+        <div class="range-row" id="cue-volume-row">
           <input id="cue-volume" type="range" min="0" max="100" step="1" aria-label="Sound cue volume" />
           <output id="cue-volume-label" for="cue-volume">22%</output>
         </div>
       </label>
 
       <label class="field">
-        <span><input id="live-preview" type="checkbox" /> Type dictation live</span>
-        <small>Partial text may revise while speaking; only the final transcript is inserted.</small>
+        <span class="check-label"><input id="live-preview" type="checkbox" /> Live typing</span>
+        <small>Shows words while you speak.</small>
       </label>
 
       <label class="field">
-        <span><input id="launch-at-login" type="checkbox" /> Launch at login</span>
-        <small>Keep the hotkeys ready after signing in.</small>
+        <span class="check-label"><input id="launch-at-login" type="checkbox" /> Launch at login</span>
       </label>
 
-      <div class="row">
-        <input id="preview-text" type="text" spellcheck="false"
-               value="Everything here runs on your own computer." />
-        <button data-cmd="speak_text" data-arg="preview-text">Preview</button>
+      <div class="card-actions">
+        <input id="preview-text" type="hidden" value="This is your selected Kokoro voice." />
+        <button class="secondary" data-cmd="speak_text" data-arg="preview-text">Preview voice</button>
       </div>
     </section>
 
-    <h2>Privacy</h2>
-    <section class="card">
-      <p>
-        macOS keeps these approvals under your control. Kokoro checks them
-        automatically; microphone and screen access are requested only when you
-        first use those features.
-      </p>
-      <ul class="perms permission-statuses">
-        <li><span><strong>Accessibility</strong> — selection and dictation</span><em id="privacy-accessibility">Checking…</em></li>
-        <li><span><strong>Input Monitoring</strong> — global shortcuts</span><em id="privacy-input">Checking…</em></li>
-        <li><span><strong>Microphone</strong> — dictation</span><em id="privacy-microphone">On first use</em></li>
-        <li><span><strong>Screen Recording</strong> — snip &amp; read</span><em id="privacy-screen">On first use</em></li>
-      </ul>
-    </section>
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <div class="advanced-body">
+        <p class="local-note"><strong>Local only.</strong> Speech and dictation stay on this computer.</p>
+        <div class="advanced-row"><span>Storage</span><span id="storage-detail">Checking…</span></div>
+        <div class="advanced-actions">
+          <button class="secondary" id="export-diagnostics">Export diagnostics</button>
+          <label><input type="checkbox" id="remove-preferences" /> Remove settings too</label>
+          <button class="danger" id="remove-local-data">Remove local data</button>
+        </div>
+      </div>
+    </details>
 
-    <h2>Storage</h2>
-    <section class="card">
-      <p id="storage-detail">Checking local data…</p>
-      <label><input type="checkbox" id="remove-preferences" /> Also remove preferences and hotkeys</label>
-      <button class="ghost" id="remove-local-data">Remove downloaded models and runtime</button>
-    </section>
-
-    <footer>
-      <span id="detail">—</span>
-      <button class="ghost" id="export-diagnostics">Export diagnostics</button>
-      <a href="https://github.com/TylerTools/kokoro-voice" target="_blank" rel="noreferrer">Source</a>
-    </footer>
+    <p class="version">Kokoro Voice 2.1</p>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

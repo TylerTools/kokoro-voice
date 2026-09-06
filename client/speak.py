@@ -605,7 +605,8 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
     try:
         playback_lock = _claim_playback()
     except RuntimeError as error:
-        notify(str(error))
+        print(f"ERROR {error}", file=sys.stderr, flush=True)
+        notify("Speech is already playing.")
         return 2
     _CANCELLED.clear()
     previous_handler = _install_cancel_handler()
@@ -669,7 +670,8 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
             except queue.Empty:
                 continue
             if err:
-                notify(err)
+                print(f"ERROR speech synthesis failed: {err}", file=sys.stderr, flush=True)
+                notify("Speech failed. Open Settings.")
                 result = 2
                 break
             if idx == -1:
@@ -759,7 +761,8 @@ def main() -> int:
                 print(", ".join(json.loads(r.read())["voices"]))
             return 0
     except urllib.error.URLError as e:
-        notify(f"Kokoro service unreachable at {HOST}: {e.reason}")
+        print(f"ERROR Kokoro unreachable at {HOST}: {e.reason}", file=sys.stderr, flush=True)
+        notify("Kokoro is not running. Open Settings.")
         return 2
 
     if args.text:
@@ -773,7 +776,7 @@ def main() -> int:
 
     text = (text or "").strip()
     if not text:
-        notify("Nothing to speak (no selection or empty clipboard).")
+        notify("Select text, then press Read.")
         return 1
 
     if args.emit_paths:

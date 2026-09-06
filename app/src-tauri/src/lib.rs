@@ -92,6 +92,8 @@ static STATUS_WINDOW_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static STATUS_WINDOW_WIDTH_BITS: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
+static STATUS_WINDOW_HEIGHT_BITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "macos")]
 static STATUS_SPACE_WATCHER_STARTED: AtomicBool = AtomicBool::new(false);
 #[cfg(unix)]
 static SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
@@ -993,8 +995,13 @@ fn set_status_window_requested(requested: bool) {
     }
 }
 
+const PLAYER_WIDTH: f64 = 152.0;
+const PLAYER_HEIGHT: f64 = 50.0;
+const NOTICE_WIDTH: f64 = 360.0;
+const NOTICE_HEIGHT: f64 = 66.0;
+
 #[cfg(target_os = "macos")]
-fn place_status_panel(panel: &objc2_app_kit::NSPanel, width: f64) {
+fn place_status_panel(panel: &objc2_app_kit::NSPanel, width: f64, height: f64) {
     let Some(main_thread) = objc2::MainThreadMarker::new() else {
         return;
     };
@@ -1002,9 +1009,9 @@ fn place_status_panel(panel: &objc2_app_kit::NSPanel, width: f64) {
         .map(|screen| screen.visibleFrame())
         .unwrap_or_else(|| panel.frame());
     frame.origin.x += frame.size.width - width - 18.0;
-    frame.origin.y += frame.size.height - 50.0 - 14.0;
+    frame.origin.y += frame.size.height - height - 14.0;
     frame.size.width = width;
-    frame.size.height = 50.0;
+    frame.size.height = height;
     panel.setFrame_display(frame, true);
 }
 
@@ -1060,11 +1067,12 @@ fn start_status_space_watcher(app: AppHandle) {
                 return;
             }
             let width = f64::from_bits(STATUS_WINDOW_WIDTH_BITS.load(Ordering::SeqCst));
+            let height = f64::from_bits(STATUS_WINDOW_HEIGHT_BITS.load(Ordering::SeqCst));
             panel.setCollectionBehavior(status_window_collection_behavior());
             panel.setHidesOnDeactivate(false);
             panel.setCanHide(false);
             panel.setLevel(status_window_level());
-            place_status_panel(panel, width);
+            place_status_panel(panel, width, height);
             panel.orderFrontRegardless();
             structured_log(
                 "status-window-reasserted",
@@ -1079,7 +1087,7 @@ fn start_status_space_watcher(app: AppHandle) {
 }
 
 #[cfg(target_os = "macos")]
-fn show_status_window_without_activation(window: &tauri::WebviewWindow, width: f64) {
+fn show_status_window_without_activation(window: &tauri::WebviewWindow, width: f64, height: f64) {
     // WebviewWindow::show can activate a regular macOS application even when
     // the window itself is non-focusable. That steals the Accessibility target
     // between capture and the first live preview. AppKit's
@@ -1101,9 +1109,9 @@ fn show_status_window_without_activation(window: &tauri::WebviewWindow, width: f
                 .map(|screen| screen.visibleFrame())
                 .unwrap_or_else(|| native.frame());
             frame.origin.x += frame.size.width - width - 18.0;
-            frame.origin.y += frame.size.height - 50.0 - 14.0;
+            frame.origin.y += frame.size.height - height - 14.0;
             frame.size.width = width;
-            frame.size.height = 50.0;
+            frame.size.height = height;
             let panel = objc2_app_kit::NSPanel::initWithContentRect_styleMask_backing_defer(
                 main_thread.alloc(),
                 frame,
@@ -1135,8 +1143,9 @@ fn show_status_window_without_activation(window: &tauri::WebviewWindow, width: f
         };
 
         STATUS_WINDOW_WIDTH_BITS.store(width.to_bits(), Ordering::SeqCst);
+        STATUS_WINDOW_HEIGHT_BITS.store(height.to_bits(), Ordering::SeqCst);
         set_status_window_requested(true);
-        place_status_panel(panel, width);
+        place_status_panel(panel, width, height);
         panel.setCollectionBehavior(status_window_collection_behavior());
         panel.setHidesOnDeactivate(false);
         panel.setCanHide(false);
@@ -1161,7 +1170,7 @@ fn show_status_window_without_activation(window: &tauri::WebviewWindow, width: f
 }
 
 #[cfg(not(target_os = "macos"))]
-fn show_status_window_without_activation(window: &tauri::WebviewWindow, _width: f64) {
+fn show_status_window_without_activation(window: &tauri::WebviewWindow, _width: f64, _height: f64) {
     let _ = window.show();
 }
 
@@ -1192,7 +1201,7 @@ fn show_player(app: &AppHandle) {
     let _ = w.set_focusable(false);
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = w.set_size(tauri::LogicalSize::new(152.0, 50.0));
+        let _ = w.set_size(tauri::LogicalSize::new(PLAYER_WIDTH, PLAYER_HEIGHT));
         if let Ok(Some(mon)) = w.primary_monitor() {
             let scale = mon.scale_factor();
             let work_area = mon.work_area();
@@ -1204,7 +1213,7 @@ fn show_player(app: &AppHandle) {
             ));
         }
     }
-    show_status_window_without_activation(&w, 152.0);
+    show_status_window_without_activation(&w, PLAYER_WIDTH, PLAYER_HEIGHT);
 }
 
 fn show_player_notice(app: &AppHandle, message: &str) {
@@ -1214,14 +1223,14 @@ fn show_player_notice(app: &AppHandle, message: &str) {
     let _ = w.set_focusable(false);
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = w.set_size(tauri::LogicalSize::new(250.0, 50.0));
+        let _ = w.set_size(tauri::LogicalSize::new(NOTICE_WIDTH, NOTICE_HEIGHT));
         if let Ok(Some(mon)) = w.primary_monitor() {
             let scale = mon.scale_factor();
             let work_area = mon.work_area();
             let size = work_area.size.to_logical::<f64>(scale);
             let pos = work_area.position.to_logical::<f64>(scale);
             let _ = w.set_position(tauri::LogicalPosition::new(
-                pos.x + size.width - 268.0,
+                pos.x + size.width - NOTICE_WIDTH - 18.0,
                 pos.y + 14.0,
             ));
         }
@@ -1230,7 +1239,7 @@ fn show_player_notice(app: &AppHandle, message: &str) {
     let _ = w.eval(format!(
         "window.__kokoroShowNotice && window.__kokoroShowNotice({encoded})"
     ));
-    show_status_window_without_activation(&w, 250.0);
+    show_status_window_without_activation(&w, NOTICE_WIDTH, NOTICE_HEIGHT);
 }
 
 /// Tell the transport what it is representing: "playing" or "recording".
@@ -1319,7 +1328,10 @@ fn run_client_monitored(
             Ok(result) => String::from_utf8_lossy(&result.stdout)
                 .lines()
                 .find_map(|line| line.strip_prefix("NOTICE ").map(str::to_owned)),
-            Err(error) => Some(format!("Could not start Kokoro: {error}")),
+            Err(error) => {
+                eprintln!("could not start Kokoro playback: {error}");
+                Some("Kokoro couldn't start. Open Settings.".into())
+            }
         };
         let current = generation
             .and_then(|generation| {
@@ -1447,10 +1459,10 @@ fn snip_result_code(success: bool, stdout: &str, stderr: &str) -> Option<&'stati
 fn snip_failure_notice(code: &str) -> Option<&'static str> {
     match code {
         "cancelled" => None,
-        "capture-failed" => Some("Screen capture failed — check Screen Recording permission"),
-        "no-text" => Some("No readable text found in that area"),
-        "ocr-failed" => Some("Text recognition failed — try the snip again"),
-        _ => Some("Snip could not start — run System Check"),
+        "capture-failed" => Some("Screen capture blocked. Allow Screen Recording."),
+        "no-text" => Some("No readable text in that area."),
+        "ocr-failed" => Some("Text recognition failed. Try again."),
+        _ => Some("Snip couldn't start. Open Settings."),
     }
 }
 
@@ -1487,7 +1499,7 @@ fn snip_and_read(app: AppHandle) {
         let out = client_command(&paths, "snip.py").output();
         let Ok(out) = out else {
             structured_log("snip-failed", serde_json::json!({ "code": "spawn-failed" }));
-            show_player_notice(&app2, "Snip could not start — run System Check");
+            show_player_notice(&app2, "Snip couldn't start. Open Settings.");
             std::thread::sleep(std::time::Duration::from_secs(3));
             hide_player(&app2);
             return;
@@ -1655,7 +1667,7 @@ fn dictation_start(app: &AppHandle) {
                 "dictation-start-rejected",
                 serde_json::json!({ "code": "secure-field" }),
             );
-            show_player_notice(app, "Dictation unavailable in secure fields");
+            show_player_notice(app, "Secure fields don't allow dictation.");
             return;
         }
         Err(_) => None,
@@ -1859,7 +1871,10 @@ fn dictation_start(app: &AppHandle) {
                             }
                         }
                         Event::InactivityWarning => {
-                            show_player_notice(&app2, "Still recording — release or press Escape");
+                            show_player_notice(
+                                &app2,
+                                "Still recording. Release the shortcut or press Escape.",
+                            );
                         }
                         Event::Metrics(metrics) => {
                             if let Ok(mut value) =
@@ -1925,7 +1940,7 @@ fn dictation_start(app: &AppHandle) {
                                         );
                                         show_player_notice(
                                             &app2,
-                                            "Focus changed — final will be copied",
+                                            "Focus changed. Final text will be copied.",
                                         );
                                         if let Some(d) = app2.try_state::<Dictation>() {
                                             if let Ok(mut guard) = d.0.lock() {
@@ -1952,7 +1967,7 @@ fn dictation_start(app: &AppHandle) {
                                         );
                                         show_player_notice(
                                             &app2,
-                                            "Target unavailable — final will be copied",
+                                            "Text field unavailable. Final text will be copied.",
                                         );
                                     }
                                     ApplyOutcome::SecureField => {
@@ -2033,10 +2048,7 @@ fn dictation_start(app: &AppHandle) {
                             }),
                         );
                         set_dictation_status(&app2, &id, DictationStatus::ClipboardFallback);
-                        show_player_notice(
-                            &app2,
-                            "Full message copied — press Command+V to paste it",
-                        );
+                        show_player_notice(&app2, "Copied. Press Command+V to paste.");
                     }
                 }
             }
@@ -2085,7 +2097,7 @@ fn dictation_start(app: &AppHandle) {
             dictation_protocol::parse(line) == dictation_protocol::Event::Error("no audio captured")
         }) {
             set_dictation_status(&app2, &id, DictationStatus::Cancelled);
-            show_player_notice(&app2, "No speech captured — hold the keys while speaking");
+            show_player_notice(&app2, "No speech heard. Hold the shortcut while speaking.");
         } else {
             set_dictation_status(&app2, &id, DictationStatus::Cancelled);
         }
@@ -2844,11 +2856,11 @@ pub fn run() {
                     );
                     eprintln!("{error}");
                     let notice = if permission_required {
-                        format!("Enable {} in Input Monitoring", variant::DISPLAY_NAME)
+                        "Finish setup in Kokoro Settings"
                     } else {
-                        "Kokoro shortcuts could not start".into()
+                        "Shortcuts couldn't start. Open Settings."
                     };
-                    show_player_notice(&handle, &notice);
+                    show_player_notice(&handle, notice);
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();

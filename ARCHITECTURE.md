@@ -126,6 +126,9 @@ delegate requires that invariant during resize and shutdown callbacks.
 
 The producer and player share stop state. Stopping only the current audio
 process is incorrect because a later synthesized chunk would restart playback.
+The transport is deliberately plain and compact. Action notices use a wider,
+taller two-line surface; they must never inherit the transport's one-line
+ellipsis because the recovery action is the reason the notice exists.
 
 ## Dictation path
 
@@ -271,6 +274,12 @@ release manager likewise admits fresh readiness evidence from a replacement
 process launched from the newly installed bundle, while retaining version,
 timestamp, and bundle-path checks so a restart cannot accidentally accept an
 old release's log entry.
+
+After setup, the settings window is an operating surface rather than product
+documentation: shortcut bindings and voice/dictation controls remain visible,
+while privacy explanation, storage, diagnostics, and local-data removal stay
+under Advanced. Routine health is expressed once in the header; background
+polling must not overwrite action feedback with repeated readiness prose.
 
 ## Release channels and rollback
 
