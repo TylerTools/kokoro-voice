@@ -1,4 +1,4 @@
-# Kokoro Voice release process
+# HereWord release process
 
 This workflow keeps the installed Stable app running throughout development.
 Installing, promoting, or rolling back remains a deliberate operator action.
@@ -8,7 +8,7 @@ Installing, promoting, or rolling back remains a deliberate operator action.
 ```sh
 scripts/release/build-candidate.sh
 scripts/release/verify-macos-bundle.sh \
-  "app/src-tauri/target/release/bundle/macos/Kokoro Voice Candidate.app" \
+  "app/src-tauri/target/release/bundle/macos/HereWord Candidate.app" \
   --channel candidate
 ```
 
@@ -49,7 +49,7 @@ Build Stable from the exact commit tested as Candidate:
 KOKORO_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
   scripts/release/build-stable.sh
 scripts/release/verify-macos-bundle.sh \
-  "app/src-tauri/target/release/bundle/macos/Kokoro Voice 2.1.app" \
+  "app/src-tauri/target/release/bundle/macos/HereWord.app" \
   --channel stable
 ```
 
@@ -66,7 +66,7 @@ intentionally incompatible with promotion.
 ```sh
 scripts/release/promote-macos.sh \
   --allow-signing-transition \
-  "app/src-tauri/target/release/bundle/macos/Kokoro Voice 2.1.app"
+  "app/src-tauri/target/release/bundle/macos/HereWord.app"
 ```
 
 Promotion verifies the bundle, archives current Stable and selected settings,
@@ -113,6 +113,9 @@ Release archives and state live in:
 ```text
 ~/Library/Application Support/Kokoro Voice Release Manager/
 ```
+
+That legacy internal directory name is intentionally retained so existing
+rollback state survives the public HereWord rename.
 
 The archive excludes the bearer token, logs, generated audio, models, and the
 Python environment. Engine sources are independently versioned beneath Stable's

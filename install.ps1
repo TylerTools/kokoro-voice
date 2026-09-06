@@ -1,10 +1,10 @@
-# Kokoro Voice Windows desktop installer bootstrap.
+# HereWord Windows desktop installer bootstrap.
 # Downloads only a signed release installer; the desktop app owns its engine.
 
 $ErrorActionPreference = 'Stop'
-$Repository = 'TylerTools/kokoro-voice'
+$Repository = 'Tyler-Tools/kokoro-voice-2'
 
-Write-Host 'Finding the latest Kokoro Voice release...'
+Write-Host 'Finding the latest HereWord release...'
 $release = Invoke-RestMethod "https://api.github.com/repos/$Repository/releases/latest"
 $asset = $release.assets | Where-Object {
     $_.name -match 'x64.*\.(msi|exe)$' -or $_.name -match '\.(msi|exe)$'
@@ -28,4 +28,4 @@ if ($extension -eq '.msi') {
     $process = Start-Process $installer -Wait -PassThru
 }
 if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode)." }
-Write-Host 'Kokoro Voice installed. First launch will download and verify its local models.'
+Write-Host 'HereWord installed. First launch will download and verify its local models.'

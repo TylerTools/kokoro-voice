@@ -6,8 +6,8 @@
   --ink: #20211f;
   --muted: #686a66;
   --line: #dcddd9;
-  --accent: #157a76;
-  --accent-hover: #106965;
+  --accent: #b94735;
+  --accent-hover: #9f392b;
   --ok: #27835d;
   --warn: #a66500;
   --danger: #b23a3a;
@@ -22,8 +22,8 @@
     --ink: #f2f3ef;
     --muted: #a2a59f;
     --line: #363834;
-    --accent: #50aaa5;
-    --accent-hover: #66bbb6;
+    --accent: #c84a36;
+    --accent-hover: #b94735;
     --ok: #66b98d;
     --warn: #e1aa52;
     --danger: #e17b7b;
@@ -50,6 +50,10 @@ header {
   gap: 16px;
   margin-bottom: 18px;
 }
+
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand img { flex: 0 0 auto; border-radius: 9px; }
+.brand p { margin-top: 1px; color: var(--muted); font-size: 11.5px; }
 
 h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.025em; }
 h2 { margin: 0 0 12px; font-size: 14px; font-weight: 650; }

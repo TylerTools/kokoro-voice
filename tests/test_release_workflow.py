@@ -19,9 +19,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.stable = self.root / "Applications/Kokoro Voice 2.1.app"
-        self.artifact = self.root / "artifacts/Kokoro Voice 2.1.app"
-        self.candidate = self.root / "artifacts/Kokoro Voice Candidate.app"
+        self.stable = self.root / "Applications/HereWord.app"
+        self.legacy_stable = self.root / "Applications/Kokoro Voice 2.1.app"
+        self.artifact = self.root / "artifacts/HereWord.app"
+        self.candidate = self.root / "artifacts/HereWord Candidate.app"
         self.vault = self.root / "vault"
         self.config_dir = self.root / "config"
         self.codesign = self.root / "fake-codesign"
@@ -35,6 +36,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.codesign.chmod(self.codesign.stat().st_mode | stat.S_IXUSR)
         self.runtime = {
             "stable_app": self.stable,
+            "legacy_stable_app": self.legacy_stable,
             "vault": self.vault,
             "config": self.config_dir,
             "codesign": str(self.codesign),
@@ -181,6 +183,20 @@ class ReleaseWorkflowTests(unittest.TestCase):
             rolled_back["rollback"]["metadata"]["version"], "2.1.1-beta.1"
         )
 
+    def test_first_branded_update_migrates_the_legacy_app_name(self):
+        self.stable.rename(self.legacy_stable)
+
+        promoted = release_manager.promote(
+            self.artifact, allow_ad_hoc=True, config=self.runtime
+        )
+
+        self.assertTrue(self.stable.is_dir())
+        self.assertFalse(self.legacy_stable.exists())
+        self.assertEqual(self.installed_version(), "2.1.1-beta.1")
+        self.assertEqual(
+            promoted["rollback"]["metadata"]["version"], "2.1.0-beta.1"
+        )
+
     def test_failed_candidate_health_restores_the_previous_stable(self):
         previous_check = release_manager.launch_and_check
         calls = []
@@ -204,8 +220,39 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(calls, ["check", "check"])
         self.assertEqual(self.installed_version(), "2.1.0-beta.1")
 
+    def test_failed_branded_name_migration_restores_the_legacy_app(self):
+        self.stable.rename(self.legacy_stable)
+        previous_check = release_manager.launch_and_check
+        calls = []
+
+        def fail_once(*_args, **_kwargs):
+            calls.append("check")
+            if len(calls) == 1:
+                raise release_manager.ReleaseError("simulated unhealthy engine")
+
+        release_manager.launch_and_check = fail_once
+        try:
+            with self.assertRaisesRegex(
+                release_manager.ReleaseError, "Stable was restored"
+            ):
+                release_manager.promote(
+                    self.artifact, allow_ad_hoc=True, config=self.runtime
+                )
+        finally:
+            release_manager.launch_and_check = previous_check
+
+        self.assertEqual(calls, ["check", "check"])
+        self.assertTrue(self.legacy_stable.is_dir())
+        self.assertFalse(self.stable.exists())
+        self.assertEqual(
+            release_manager.bundle_info(self.legacy_stable)[
+                "CFBundleShortVersionString"
+            ],
+            "2.1.0-beta.1",
+        )
+
     def test_same_version_update_is_rejected_before_the_swap(self):
-        same = self.root / "same/Kokoro Voice 2.1.app"
+        same = self.root / "same/HereWord.app"
         self.make_bundle(same, release_manager.STABLE_IDENTIFIER, "2.1.0-beta.1")
         with self.assertRaisesRegex(release_manager.ReleaseError, "must differ"):
             release_manager.promote(same, allow_ad_hoc=True, config=self.runtime)

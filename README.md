@@ -1,4 +1,4 @@
-# kokoro-voice
+# HereWord
 
 Local read-aloud, dictation, and screen-snip OCR for your desktop. Select text
 anywhere and hear it; hold a key and speak to type; drag a box around anything
@@ -57,13 +57,11 @@ Developer and agent documentation:
 ## Install
 
 For macOS on Apple silicon, download
-[Kokoro Voice 2.1](https://github.com/TylerTools/kokoro-voice/releases/tag/v2.1.0-beta.1)
-from the GitHub release. The desktop app installs its private runtime and
-verified models on first launch; no system Python is required.
-
-This beta is ad-hoc signed for local use rather than notarized with an Apple
-Developer ID, so macOS may require first-launch confirmation in Privacy &
-Security. A verified Windows 2.1 installer is not included in this release.
+[HereWord from GitHub Releases](https://github.com/Tyler-Tools/kokoro-voice-2/releases).
+The desktop app installs its private runtime and verified models on first
+launch; no system Python is required. Published macOS builds are signed with a
+persistent Developer ID and notarized by Apple. A verified Windows 2.1
+installer is not included in this release.
 
 ```powershell
 .\install.ps1         # Windows
@@ -73,7 +71,7 @@ Security. A verified Windows 2.1 installer is not included in this release.
 whose Authenticode signature is not valid.
 
 `install.sh` is a legacy/manual service-only installer. Do not run it on a Mac
-that uses Kokoro Voice.app: it creates a second engine owner and port conflict.
+that uses HereWord.app: it creates a second engine owner and port conflict.
 
 Then check it:
 

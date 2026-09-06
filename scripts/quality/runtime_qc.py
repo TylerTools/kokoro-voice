@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure a passive Kokoro Candidate without exposing speech or credentials.
+"""Measure a passive HereWord Candidate without exposing speech or credentials.
 
 Owns repeatable local runtime acceptance for memory, TTS/STT latency, worker
 retirement, and transcript equivalence. It does not launch, install, stop, or
@@ -93,7 +93,7 @@ def candidate_app_pid() -> int | None:
         [
             "/usr/bin/pgrep",
             "-f",
-            "/Kokoro Voice Candidate.app/Contents/MacOS/kokoro-voice-2-1$",
+            "/HereWord Candidate.app/Contents/MacOS/kokoro-voice-2-1$",
         ],
         capture_output=True,
         text=True,

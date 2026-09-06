@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transactional macOS promotion and rollback for Kokoro Voice.
+"""Transactional macOS promotion and rollback for HereWord.
 
 The reusable Candidate app is deliberately never promoted: its bundle identity
 and runtime namespace are different from Stable. After Candidate acceptance,
@@ -43,7 +43,12 @@ def settings() -> dict[str, Path | str | bool]:
     home = Path.home()
     return {
         "stable_app": Path(
-            os.environ.get("KOKORO_STABLE_APP", "/Applications/Kokoro Voice 2.1.app")
+            os.environ.get("KOKORO_STABLE_APP", "/Applications/HereWord.app")
+        ),
+        "legacy_stable_app": Path(
+            os.environ.get(
+                "KOKORO_LEGACY_STABLE_APP", "/Applications/Kokoro Voice 2.1.app"
+            )
         ),
         "vault": Path(
             os.environ.get(
@@ -375,6 +380,33 @@ def swap_apps(stable: Path, staged: Path) -> Path:
     return previous
 
 
+def installed_stable_path(config: dict) -> Path:
+    """Resolve the current app once, including the one-time public-name migration."""
+    stable = Path(config["stable_app"])
+    if stable.exists():
+        return stable
+    legacy = config.get("legacy_stable_app")
+    if legacy is not None and Path(legacy).exists():
+        return Path(legacy)
+    return stable
+
+
+def replace_installed_app(installed: Path, destination: Path, staged: Path) -> Path:
+    """Atomically replace Stable, allowing its Finder-visible name to change once."""
+    if installed == destination:
+        return swap_apps(installed, staged)
+    if destination.exists():
+        raise ReleaseError(f"refusing to overwrite existing path: {destination}")
+    previous = installed.parent / f".{installed.name}.previous-{uuid.uuid4().hex}.app"
+    os.replace(installed, previous)
+    try:
+        os.replace(staged, destination)
+    except BaseException:
+        os.replace(previous, installed)
+        raise
+    return previous
+
+
 def promote(
     artifact: Path,
     *,
@@ -382,7 +414,8 @@ def promote(
     allow_signing_transition: bool = False,
     config: dict,
 ) -> dict:
-    stable = Path(config["stable_app"])
+    destination = Path(config["stable_app"])
+    stable = installed_stable_path(config)
     vault = Path(config["vault"])
     stable_meta = verify_bundle(stable, STABLE_IDENTIFIER, config)
     artifact_meta = verify_bundle(artifact, STABLE_IDENTIFIER, config)
@@ -415,7 +448,7 @@ def promote(
     snapshot_config(Path(config["config"]), archived_config)
     verify_bundle(archived_app, STABLE_IDENTIFIER, config)
 
-    staged = stable.parent / f".{stable.name}.staged-{uuid.uuid4().hex}.app"
+    staged = destination.parent / f".{destination.name}.staged-{uuid.uuid4().hex}.app"
     copy_bundle(artifact, staged, config)
     verify_bundle(staged, STABLE_IDENTIFIER, config)
 
@@ -425,28 +458,31 @@ def promote(
         {
             "operation": "promote",
             "stable": str(stable),
+            "destination": str(destination),
             "staged": str(staged),
             "archive": str(archive),
         },
     )
     previous_slot: Path | None = None
+    active = stable
     try:
         stop_stable(stable, config)
-        previous_slot = swap_apps(stable, staged)
+        previous_slot = replace_installed_app(stable, destination, staged)
+        active = destination
         launch_config = {
             **config,
             "accessibility_timeout": 600
             if allow_signing_transition
             else config["accessibility_timeout"],
         }
-        launch_and_check(stable, launch_config, artifact_meta["version"])
+        launch_and_check(active, launch_config, artifact_meta["version"])
     except BaseException as error:
         if previous_slot and previous_slot.exists():
             try:
-                stop_stable(stable, config)
-                failed_slot = stable.parent / f".{stable.name}.failed-{uuid.uuid4().hex}.app"
-                if stable.exists():
-                    os.replace(stable, failed_slot)
+                stop_stable(active, config)
+                failed_slot = active.parent / f".{active.name}.failed-{uuid.uuid4().hex}.app"
+                if active.exists():
+                    os.replace(active, failed_slot)
                 os.replace(previous_slot, stable)
                 restore_config(archived_config, Path(config["config"]))
                 launch_and_check(

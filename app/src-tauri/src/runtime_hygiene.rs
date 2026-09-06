@@ -1,6 +1,6 @@
 //! Private runtime-file classification, cleanup, and accounting.
 //!
-//! This module owns only disposable files created by Kokoro clients. It must
+//! This module owns only disposable files created by HereWord clients. It must
 //! never treat exported audio, preferences, tokens, logs, or unknown files as
 //! removable runtime state.
 
@@ -140,13 +140,16 @@ pub(crate) fn speaker_is_live(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{cleanup_managed_runtime, managed_runtime_bytes};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
     fn fixture(label: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
             "kokoro-hygiene-{label}-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();

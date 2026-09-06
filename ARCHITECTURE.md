@@ -1,8 +1,8 @@
-# Kokoro Voice architecture
+# HereWord architecture
 
 ## System boundary
 
-Kokoro Voice is one local product split into a desktop control plane and a warm
+HereWord is one local product split into a desktop control plane and a warm
 Python model engine. The split keeps model ownership stable while allowing the
 desktop host to manage global input, permissions, selection, and insertion.
 
@@ -190,12 +190,12 @@ The `.app` bundles small Python sources and lockfiles, not the models or private
 environment. First run creates:
 
 ```text
-~/Library/Application Support/Kokoro Voice 2.1/engine/
+~/Library/Application Support/Kokoro Voice 2.1/engine/  # retained legacy data path
   .venv/
   models/
   active-source
   sources/
-    2.1.1-beta.3-<content hash>/
+    2.1.1-beta.4-<content hash>/
       server.py
       stt_config.py
       client/

@@ -17,7 +17,7 @@ use core_graphics::event::{
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
-/// Marks Kokoro's synthetic text-edit events so the modifier gesture tap does
+/// Marks HereWord's synthetic text-edit events so the modifier gesture tap does
 /// not mistake live transcript insertion for a contaminated physical chord.
 const INJECTED_EVENT_MARKER: i64 = 0x4b4f_4b4f_524f;
 static SUSPENDED_FOR_RECORDER: AtomicBool = AtomicBool::new(false);

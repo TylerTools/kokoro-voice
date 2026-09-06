@@ -1,6 +1,6 @@
 //! Target-locked accessibility insertion for live dictation.
 //!
-//! A preview may revise text already inserted by Kokoro, but it must never edit
+//! A preview may revise text already inserted by HereWord, but it must never edit
 //! a different control or overwrite user changes. `TargetSnapshot` records the
 //! original process/control, selection, and owned-text projection. Every write
 //! revalidates those invariants and permanently falls back to the clipboard

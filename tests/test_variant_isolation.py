@@ -13,18 +13,39 @@ class VariantIsolationTests(unittest.TestCase):
         cargo = (ROOT / "app/src-tauri/Cargo.toml").read_text()
         package = json.loads((ROOT / "app/package.json").read_text())
 
-        self.assertEqual(config["productName"], "Kokoro Voice 2.1")
+        self.assertEqual(config["productName"], "HereWord")
         self.assertEqual(config["identifier"], "com.tylertools.kokoro-voice-2-1")
         self.assertRegex(cargo, r'(?m)^name = "kokoro-voice-2-1"$')
         self.assertIn(f'version = "{config["version"]}"', cargo)
         self.assertEqual(package["name"], "kokoro-voice-2-1-ui")
         self.assertEqual(package["version"], config["version"])
 
+    def test_public_brand_changes_without_resetting_runtime_identity(self):
+        config = json.loads((ROOT / "app/src-tauri/tauri.conf.json").read_text())
+        candidate = json.loads(
+            (ROOT / "app/src-tauri/tauri.candidate.conf.json").read_text()
+        )
+        index = (ROOT / "app/index.html").read_text()
+        info = (ROOT / "app/src-tauri/Info.plist").read_text()
+        variant = (ROOT / "app/src-tauri/src/variant.rs").read_text()
+        stable_build = (ROOT / "scripts/release/build-stable.sh").read_text()
+        candidate_build = (ROOT / "scripts/release/build-candidate.sh").read_text()
+
+        self.assertEqual(config["productName"], "HereWord")
+        self.assertEqual(candidate["productName"], "HereWord Candidate")
+        self.assertIn("Your words stay here.", index)
+        self.assertNotIn("Kokoro", index)
+        self.assertNotIn("Kokoro", info)
+        self.assertIn('None => "HereWord"', variant)
+        self.assertIn('None => "Kokoro Voice 2.1"', variant)
+        self.assertIn("bundle/macos/HereWord.app", stable_build)
+        self.assertIn('KOKORO_DISPLAY_NAME="HereWord Candidate"', candidate_build)
+
     def test_candidate_bundle_has_one_reusable_identity(self):
         config = json.loads(
             (ROOT / "app/src-tauri/tauri.candidate.conf.json").read_text()
         )
-        self.assertEqual(config["productName"], "Kokoro Voice Candidate")
+        self.assertEqual(config["productName"], "HereWord Candidate")
         self.assertEqual(
             config["identifier"], "com.tylertools.kokoro-voice-candidate"
         )

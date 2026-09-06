@@ -3,13 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Kokoro Voice</title>
+    <title>HereWord</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
     <header>
       <div class="brand">
-        <h1>Kokoro Voice</h1>
+        <img src="/hereword-icon.svg" alt="" width="34" height="34" />
+        <div>
+          <h1>HereWord</h1>
+          <p>Your words stay here.</p>
+        </div>
       </div>
       <div id="status" class="status status--unknown">
         <span class="dot"></span><span id="status-text">checking…</span>
@@ -20,7 +24,7 @@
     <section id="setup" class="card setup" hidden>
       <h3>Finish setup</h3>
       <p id="setup-intro">
-        Download the local models, then approve two macOS settings. Kokoro opens
+        Download the local models, then approve two macOS settings. HereWord opens
         each one and checks it automatically.
       </p>
       <ol class="setup-steps">
@@ -87,7 +91,7 @@
       </label>
 
       <div class="card-actions">
-        <input id="preview-text" type="hidden" value="This is your selected Kokoro voice." />
+        <input id="preview-text" type="hidden" value="This is your selected HereWord voice." />
         <button class="secondary" data-cmd="speak_text" data-arg="preview-text">Preview voice</button>
       </div>
     </section>
@@ -105,7 +109,7 @@
       </div>
     </details>
 
-    <p class="version">Kokoro Voice 2.1</p>
+    <p class="version">HereWord 2.1</p>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

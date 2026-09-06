@@ -6,10 +6,11 @@
 
 pub const DISPLAY_NAME: &str = match option_env!("KOKORO_DISPLAY_NAME") {
     Some(value) => value,
-    None => "Kokoro Voice 2.1",
+    None => "HereWord",
 };
 pub const APP_SUPPORT_DIR: &str = match option_env!("KOKORO_APP_SUPPORT_DIR") {
     Some(value) => value,
+    // This legacy directory is intentionally retained across the public rename.
     None => "Kokoro Voice 2.1",
 };
 #[cfg(target_os = "macos")]

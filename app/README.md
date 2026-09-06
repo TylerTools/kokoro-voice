@@ -1,4 +1,4 @@
-# Kokoro Voice desktop host
+# HereWord desktop host
 
 This directory contains the Tauri desktop control plane. It is not a stock
 Tauri template.

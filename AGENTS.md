@@ -1,12 +1,12 @@
-# Kokoro Voice agent and developer guide
+# HereWord agent and developer guide
 
-## Kokoro Voice 2.1 isolation boundary
+## HereWord isolation boundary
 
-This checkout is the isolated Kokoro Voice 2.1 development line. Never edit,
+This checkout is the isolated HereWord development line. Never edit,
 replace, stop, re-sign, or test through `/Applications/Kokoro Voice 2.app` or the
 original `/Users/tylerthompson/tts/kokoro-service` checkout.
 
-Kokoro Voice 2.1 owns only:
+HereWord owns only:
 
 - bundle identifier `com.tylertools.kokoro-voice-2-1`;
 - loopback port `8125`;
@@ -27,7 +27,7 @@ shortcuts, process lifecycle, live dictation, setup, or release code.
 
 ## Product contract
 
-Kokoro Voice is a local desktop accessibility app with three user actions:
+HereWord is a local desktop accessibility app with three user actions:
 
 1. **Read** — speak the selected text.
 2. **Dictate** — record while held, transcribe locally, and insert safely.
@@ -75,7 +75,7 @@ unless the task explicitly concerns that legacy integration.
 | `smoke_test.py`, `benchmark_stt.py` | Developer measurement tools | Not runtime entrypoints and never bundled. |
 
 Only one process owner may manage the engine. For the supported desktop
-product that owner is `/Applications/Kokoro Voice.app`; a launchd service from
+product that owner is `/Applications/HereWord.app`; a launchd service from
 `install.sh` or Hammerspoon host running alongside it is a configuration error.
 
 ## Failure routing
@@ -160,7 +160,7 @@ shortcut. The proof event is `hotkey-triggered` followed by the action event.
 There are three different artifacts; always identify which one was verified:
 
 1. Repository source: this checkout.
-2. Installed bundle: `/Applications/Kokoro Voice 2.1.app`.
+2. Installed bundle: `/Applications/HereWord.app` (legacy installs use `/Applications/Kokoro Voice 2.1.app` until the first branded update).
 3. Synced engine source: `~/Library/Application Support/Kokoro Voice 2.1/engine`.
 
 User state is under `~/.config/kokoro-voice-2-1/`:
@@ -223,7 +223,7 @@ For a local macOS bundle:
 ```sh
 cd app
 PATH="$HOME/.local/node/bin:$HOME/.cargo/bin:$PATH" npm run tauri -- build --bundles app
-codesign --verify --deep --strict "src-tauri/target/release/bundle/macos/Kokoro Voice 2.1.app"
+codesign --verify --deep --strict "src-tauri/target/release/bundle/macos/HereWord.app"
 ```
 
 After installing, verify `/health`, Accessibility and Input Monitoring for the

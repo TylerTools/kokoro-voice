@@ -634,12 +634,15 @@ pub(crate) fn spawn_engine_and_record(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMPORARY_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
     fn temporary_directory(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "kokoro-runtime-{label}-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            NEXT_TEMPORARY_DIRECTORY.fetch_add(1, Ordering::Relaxed)
         ))
     }
 

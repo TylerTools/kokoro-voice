@@ -580,7 +580,7 @@ def emit_paths(text: str, voice: str | None, speed: float) -> int:
                 chunk, voice, speed, session_end=i == len(chunks) - 1
             )
         except urllib.error.HTTPError as e:
-            print(f"ERROR Kokoro error {e.code}", flush=True)
+            print(f"ERROR Speech engine error {e.code}", flush=True)
             return 2
         except urllib.error.URLError as e:
             print(f"ERROR Kokoro unreachable at {HOST}: {e.reason}", flush=True)
@@ -632,7 +632,7 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
                     chunk, voice, speed, session_end=i == len(chunks) - 1
                 )
             except urllib.error.HTTPError as e:
-                deliver((i, None, f"Kokoro error {e.code}"))
+                deliver((i, None, f"Speech engine error {e.code}"))
                 return
             except urllib.error.URLError as e:
                 deliver((i, None, f"Kokoro service unreachable at {HOST}: {e.reason}"))

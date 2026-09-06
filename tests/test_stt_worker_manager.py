@@ -4,6 +4,7 @@ import struct
 import threading
 import time
 import unittest
+from unittest import mock
 
 from stt_worker_manager import SttWorkerManager
 
@@ -66,25 +67,51 @@ class BlockingOutput:
 
 class SttWorkerManagerTests(unittest.TestCase):
     def test_warm_repeat_earns_the_longer_burst_lease(self):
+        timers = []
+
+        class ManualTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.interval = interval
+                self.function = function
+                self.args = args or ()
+                self.kwargs = kwargs or {}
+                self.daemon = False
+                self.cancelled = False
+                timers.append(self)
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                self.cancelled = True
+
+            def fire(self, *, even_if_cancelled=False):
+                if even_if_cancelled or not self.cancelled:
+                    self.function(*self.args, **self.kwargs)
+
         process = FakeProcess(stdout=io.BytesIO(framed_response() * 2))
-        manager = SttWorkerManager(
-            "/tmp/stt_worker.py",
-            idle_seconds=0.04,
-            repeat_idle_seconds=0.12,
-            process_factory=lambda *_args, **_kwargs: process,
-        )
-        first = manager.transcribe(b"\0\0\0\0")
-        self.assertEqual(first["worker_cold_start_seconds"], 1.25)
-        self.assertEqual(manager.status()["idle_seconds"], 0.04)
-        time.sleep(0.02)
-        manager.transcribe(b"\0\0\0\0")
-        self.assertEqual(manager.status()["idle_seconds"], 0.12)
-        time.sleep(0.06)
-        self.assertFalse(process.shutdown_requested)
-        deadline = time.monotonic() + 0.5
-        while time.monotonic() < deadline and not process.shutdown_requested:
-            time.sleep(0.01)
-        self.assertTrue(process.shutdown_requested)
+        with mock.patch("stt_worker_manager.threading.Timer", ManualTimer):
+            manager = SttWorkerManager(
+                "/tmp/stt_worker.py",
+                idle_seconds=0.04,
+                repeat_idle_seconds=0.12,
+                process_factory=lambda *_args, **_kwargs: process,
+            )
+            first = manager.transcribe(b"\0\0\0\0")
+            self.assertEqual(first["worker_cold_start_seconds"], 1.25)
+            self.assertEqual(manager.status()["idle_seconds"], 0.04)
+            self.assertEqual(timers[0].interval, 0.04)
+
+            manager.transcribe(b"\0\0\0\0")
+            self.assertEqual(manager.status()["idle_seconds"], 0.12)
+            self.assertEqual(timers[1].interval, 0.12)
+
+            # Even if a cancelled callback arrives late, its stale generation
+            # cannot retire the worker renewed by the warm repeat.
+            timers[0].fire(even_if_cancelled=True)
+            self.assertFalse(process.shutdown_requested)
+            timers[1].fire()
+            self.assertTrue(process.shutdown_requested)
 
     def test_worker_is_lazy_and_exits_after_idle(self):
         created = []

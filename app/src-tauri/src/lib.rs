@@ -1,4 +1,4 @@
-//! Kokoro Voice desktop composition root.
+//! HereWord desktop composition root.
 //!
 //! This module owns first-run setup, engine lifecycle, Tauri commands, action
 //! orchestration, tray/UI composition, and shutdown. Domain logic belongs in
@@ -954,7 +954,7 @@ fn set_dictation_status(app: &AppHandle, id: &str, status: DictationStatus) {
 fn status_window_collection_behavior() -> objc2_app_kit::NSWindowCollectionBehavior {
     use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
 
-    // This is a transport overlay, not one of Kokoro's normal application
+    // This is a transport overlay, not one of HereWord's normal application
     // windows. It must remain eligible while another app owns the active Space
     // or Stage Manager set, including when that app is full-screen.
     Behavior::CanJoinAllSpaces
@@ -967,7 +967,7 @@ fn status_window_collection_behavior() -> objc2_app_kit::NSWindowCollectionBehav
 #[cfg(target_os = "macos")]
 fn status_window_level() -> objc2_app_kit::NSWindowLevel {
     // Floating/status levels remain below another application's full-screen
-    // content. The transport is visible only while Kokoro is actively playing,
+    // content. The transport is visible only while HereWord is actively playing,
     // recording, transcribing, or reporting a short notice, so the screen-saver
     // overlay level is both necessary and tightly bounded.
     objc2_app_kit::NSScreenSaverWindowLevel
@@ -1235,7 +1235,7 @@ fn show_player_notice(app: &AppHandle, message: &str) {
             ));
         }
     }
-    let encoded = serde_json::to_string(message).unwrap_or_else(|_| "\"Kokoro error\"".into());
+    let encoded = serde_json::to_string(message).unwrap_or_else(|_| "\"HereWord error\"".into());
     let _ = w.eval(format!(
         "window.__kokoroShowNotice && window.__kokoroShowNotice({encoded})"
     ));
@@ -1329,8 +1329,8 @@ fn run_client_monitored(
                 .lines()
                 .find_map(|line| line.strip_prefix("NOTICE ").map(str::to_owned)),
             Err(error) => {
-                eprintln!("could not start Kokoro playback: {error}");
-                Some("Kokoro couldn't start. Open Settings.".into())
+                eprintln!("could not start HereWord playback: {error}");
+                Some("HereWord couldn't start. Open Settings.".into())
             }
         };
         let current = generation
@@ -2223,7 +2223,7 @@ fn hotkeys() -> serde_json::Value {
 }
 
 /// Emit the same event for both shortcut adapters. The settings UI uses this
-/// as the end-to-end proof that a recorded physical shortcut reached Kokoro;
+/// as the end-to-end proof that a recorded physical shortcut reached HereWord;
 /// registration alone is not considered success.
 fn hotkey_triggered(app: &AppHandle, slot: hotkeys::Slot) {
     structured_log(
@@ -2800,7 +2800,7 @@ pub fn run() {
             app.manage(Engine(Mutex::new(None)));
             app.manage(Dictation(Mutex::new(None)));
             app.manage(playback::PlaybackManager::default());
-            // Kokoro is an accessibility tool whose hotkeys must be available
+            // HereWord is an accessibility tool whose hotkeys must be available
             // immediately after login. Default autostart on and self-heal a
             // missing LaunchAgent unless the user explicitly disabled it.
             let launch_at_login = launch_at_login_preference(&load_prefs());
@@ -2856,7 +2856,7 @@ pub fn run() {
                     );
                     eprintln!("{error}");
                     let notice = if permission_required {
-                        "Finish setup in Kokoro Settings"
+                        "Finish setup in HereWord Settings"
                     } else {
                         "Shortcuts couldn't start. Open Settings."
                     };

@@ -12,7 +12,7 @@
 
 use serde::Serialize;
 
-// Stable is distinct from Kokoro Voice 1. Candidate adds Shift so its event tap
+// Stable is distinct from the legacy app. Candidate adds Shift so its event tap
 // can run beside Stable without one physical press dispatching both builds.
 const CANDIDATE_BUILD: bool = option_env!("KOKORO_BUILD_CHANNEL").is_some();
 pub const DEFAULT_READ: &str = if CANDIDATE_BUILD {

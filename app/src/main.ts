@@ -1,5 +1,5 @@
 /**
- * Kokoro Voice settings control plane.
+ * HereWord settings control plane.
  *
  * This frontend renders engine state and captures user input, but Rust owns
  * process lifecycle, shortcut meaning/registration, permissions, and durable
@@ -68,7 +68,7 @@ async function refresh(): Promise<void> {
   if (h.status === "not-installed") {
     statusEl.classList.add("status--warn");
     statusText.textContent = "Setup needed";
-    statusEl.title = "Finish setup to enable Kokoro.";
+    statusEl.title = "Finish setup to enable HereWord.";
     return;
   }
 
@@ -89,7 +89,7 @@ async function refresh(): Promise<void> {
   } else {
     statusEl.classList.add("status--down");
     statusText.textContent = "Not running";
-    statusEl.title = "Quit and reopen Kokoro Voice.";
+    statusEl.title = "Quit and reopen HereWord.";
   }
 }
 
@@ -147,7 +147,7 @@ document.getElementById("remove-local-data")?.addEventListener("click", async ()
 });
 
 // One guided setup transaction. macOS still owns its protected approval
-// switches; Kokoro requests each one, opens the exact pane, detects the grant,
+// switches; HereWord requests each one, opens the exact pane, detects the grant,
 // advances to the next step, and resumes after a required app restart.
 const GUIDED_SETUP_KEY = "kokoro-guided-setup-active";
 const setupCard = document.getElementById("setup") as HTMLElement;
@@ -200,7 +200,7 @@ function renderSetup(report: SetupReport): SetupStep {
     setSetupActive(false);
     setupMessage.textContent = "";
   } else if (!guidedSetupActive && !setupEffectInFlight) {
-    setupMessage.textContent = "Kokoro continues as soon as each approval is on.";
+    setupMessage.textContent = "HereWord continues as soon as each approval is on.";
   }
   return step;
 }
@@ -213,7 +213,7 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
   requestedStep = step;
   try {
     if (step === "accessibility") {
-      setupMessage.textContent = "Turn on Kokoro Voice in Accessibility. This page will continue automatically.";
+      setupMessage.textContent = "Turn on HereWord in Accessibility. This page will continue automatically.";
       const result = await invoke<{ available?: boolean }>("retry_permission", { capability: "accessibility" });
       if (!result.available) {
         await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
@@ -222,7 +222,7 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
         window.setTimeout(() => { void refreshSetup(true); }, 0);
       }
     } else if (step === "input-monitoring") {
-      setupMessage.textContent = "Turn on Kokoro Voice in Input Monitoring. Kokoro will finish when macOS confirms it.";
+      setupMessage.textContent = "Turn on HereWord in Input Monitoring. HereWord will finish when macOS confirms it.";
       const result = await invoke<{ available?: boolean }>("retry_permission", { capability: "input-monitoring" });
       if (!result.available) {
         await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
@@ -254,7 +254,7 @@ async function refreshSetup(advance = guidedSetupActive): Promise<void> {
     }
   } catch (error) {
     setupCard.hidden = false;
-    setupMessage.textContent = `Kokoro could not verify setup: ${error}`;
+    setupMessage.textContent = `HereWord could not verify setup: ${error}`;
   } finally {
     setupRefreshInFlight = false;
   }
@@ -286,7 +286,7 @@ document.getElementById("setup-go")?.addEventListener("click", async (ev) => {
   btn.textContent = "Installing…";
   try {
     await invoke("setup_engine");
-    setupMessage.textContent = "Models installed. Starting Kokoro…";
+    setupMessage.textContent = "Models installed. Starting HereWord…";
   } catch (e) {
     // Setup is resumable, so say so rather than leaving a dead end.
     setupMessage.textContent = `${e} — press Retry to pick up where it stopped.`;
@@ -323,7 +323,7 @@ type HotkeyCapture = {
 let awaitingHotkeyVerification: HotkeySlot | null = null;
 listen<HotkeySlot>("hotkey-triggered", (event) => {
   if (event.payload !== awaitingHotkeyVerification) return;
-  detail.textContent = `${event.payload} shortcut verified — it reached Kokoro.`;
+  detail.textContent = `${event.payload} shortcut verified — it reached HereWord.`;
   awaitingHotkeyVerification = null;
 });
 
@@ -341,7 +341,7 @@ invoke<HotkeyResponse>("hotkeys").then((hk) => {
     btn.hidden = binding ? !binding.configurable : false;
   });
   if (Object.values(hk.bindings).some((binding) => !binding.registered)) {
-    detail.textContent = "Shortcuts need setup. Use Finish setup above; Kokoro will detect the approvals.";
+    detail.textContent = "Shortcuts need setup. Use Finish setup above; HereWord will detect the approvals.";
   }
 });
 

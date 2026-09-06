@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">HereWord</title>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="#f4f0e8"/>
+  <path fill="#18212b" d="M322 190h54c75 0 136 61 136 136v82l108-104-108 276v118c0 75-61 136-136 136h-54c-75 0-136-61-136-136V326c0-75 61-136 136-136Z"/>
+  <path fill="#c84a36" d="M648 190h54c75 0 136 61 136 136v372c0 75-61 136-136 136h-54c-75 0-136-61-136-136v-82L404 720l108-276V326c0-75 61-136 136-136Z"/>
+  <rect x="432" y="450" width="160" height="124" rx="30" fill="#f4f0e8"/>
+</svg>

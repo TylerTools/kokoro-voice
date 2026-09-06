@@ -66,7 +66,7 @@ jobs:
         with:
           projectPath: app
           tagName: v__VERSION__
-          releaseName: Kokoro Voice v__VERSION__
+          releaseName: HereWord v__VERSION__
           releaseDraft: false
           prerelease: true
           args: --target aarch64-apple-darwin

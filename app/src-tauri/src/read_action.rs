@@ -32,7 +32,7 @@ pub(crate) fn decide(
         },
         Err(ApplyOutcome::SecureField) => Decision::Notice {
             code: "secure-field",
-            message: "Kokoro will not read from a secure field",
+            message: "HereWord will not read from a secure field",
         },
         Err(_) => Decision::Notice {
             code: "selection-unavailable",

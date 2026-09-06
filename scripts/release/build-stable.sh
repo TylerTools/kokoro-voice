@@ -28,7 +28,7 @@ unset KOKORO_TTS_CPU_MEM_ARENA
 cd "${repo_root}/app"
 APPLE_SIGNING_IDENTITY="${identity}" npm run tauri -- build --bundles app "$@"
 
-bundle="${repo_root}/app/src-tauri/target/release/bundle/macos/Kokoro Voice 2.1.app"
+bundle="${repo_root}/app/src-tauri/target/release/bundle/macos/HereWord.app"
 if [[ "${identity}" == "-" ]]; then
   /usr/bin/codesign --force --deep --sign - "${bundle}"
 fi
