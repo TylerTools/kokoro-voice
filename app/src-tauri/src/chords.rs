@@ -686,15 +686,36 @@ fn post_key(
     down: bool,
     text: Option<&str>,
 ) -> Result<(), String> {
+    post_key_with_flags(source, keycode, down, text, CGEventFlags::empty())
+}
+
+fn post_key_with_flags(
+    source: CGEventSource,
+    keycode: u16,
+    down: bool,
+    text: Option<&str>,
+    flags: CGEventFlags,
+) -> Result<(), String> {
     let event = CGEvent::new_keyboard_event(source, keycode, down)
         .map_err(|_| "could not create keyboard event".to_string())?;
     event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, INJECTED_EVENT_MARKER);
-    event.set_flags(CGEventFlags::empty());
+    event.set_flags(flags);
     if let Some(text) = text {
         event.set_string(text);
     }
     event.post(CGEventTapLocation::HID);
     Ok(())
+}
+
+/// Ask the foreground application to copy its current selection. The caller
+/// owns pasteboard preservation; the injected marker keeps this helper from
+/// being mistaken for a configurable HereWord shortcut.
+pub fn copy_focused_selection() -> Result<(), String> {
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .map_err(|_| "could not create keyboard event source".to_string())?;
+    let flags = CGEventFlags::CGEventFlagCommand;
+    post_key_with_flags(source.clone(), 8, true, None, flags)?;
+    post_key_with_flags(source, 8, false, None, flags)
 }
 
 /// Replace the mutable suffix of text in the currently focused control.

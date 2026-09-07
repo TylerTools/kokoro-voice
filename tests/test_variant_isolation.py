@@ -227,6 +227,7 @@ class VariantIsolationTests(unittest.TestCase):
     def test_macos_read_capture_runs_after_the_quartz_callback_returns(self):
         lib = (ROOT / "app/src-tauri/src/lib.rs").read_text()
         backend = (ROOT / "app/src-tauri/src/text_backend.rs").read_text()
+        chords = (ROOT / "app/src-tauri/src/chords.rs").read_text()
         cargo = (ROOT / "app/src-tauri/Cargo.toml").read_text()
         self.assertIn("fn dispatch_read_from_hotkey(app: AppHandle)", lib)
         self.assertIn("from_millis(25)", lib)
@@ -234,6 +235,14 @@ class VariantIsolationTests(unittest.TestCase):
         self.assertNotIn("read_selection(read_app.clone())", lib)
         self.assertIn("NSWorkspace::sharedWorkspace()", backend)
         self.assertIn("frontmostApplication()", backend)
+        self.assertIn("copy_selection_preserving_pasteboard", backend)
+        self.assertIn("snapshot_pasteboard(&pasteboard)", backend)
+        self.assertIn("restore_pasteboard(&pasteboard, snapshot)", backend)
+        self.assertIn("NSPasteboardTypeString", backend)
+        self.assertIn("pub fn copy_focused_selection()", chords)
+        self.assertIn("INJECTED_EVENT_MARKER", chords)
+        self.assertIn('"NSPasteboard"', cargo)
+        self.assertIn('"NSPasteboardItem"', cargo)
         self.assertIn('"NSWorkspace"', cargo)
 
     def test_candidate_default_shortcuts_do_not_dispatch_stable(self):

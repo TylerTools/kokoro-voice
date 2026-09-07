@@ -107,9 +107,12 @@ accepted registration. Only `hotkey-triggered` proves the end-to-end input path.
 
 1. A shortcut or tray action calls `read_selection`.
 2. The desktop host refuses to compete with active Dictation.
-3. On macOS the desktop host reads `AXSelectedText` without touching the
-   clipboard. A fresh selection is streamed to `client/speak.py` over stdin;
-   no selection pauses or resumes active playback.
+3. On macOS the desktop host reads `AXSelectedText` first. Web wrappers that
+   expose no focused accessibility element use a user-triggered Copy fallback:
+   HereWord snapshots every pasteboard item and type, clears stale content,
+   captures the fresh selection, and restores the complete original pasteboard
+   before synthesis. A fresh selection is streamed to `client/speak.py` over
+   stdin; no selection pauses or resumes active playback.
 4. The client chunks text, pipelines authenticated `/speak` requests, and plays
    audio while preparing the next chunk.
 5. The floating player controls pause/resume/stop without stealing focus.
