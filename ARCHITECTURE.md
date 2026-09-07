@@ -195,7 +195,7 @@ environment. First run creates:
   models/
   active-source
   sources/
-    2.1.1-beta.4-<content hash>/
+    2.1.1-beta.N-<content hash>/
       server.py
       stt_config.py
       client/
@@ -260,13 +260,15 @@ Operational logs are bounded to one current and one previous hotkey log.
 
 The settings window presents setup as one resumable transaction rather than
 separate download, permission, and verification chores. A single **Finish
-setup** action installs the local models, requests Accessibility, opens the
-exact macOS pane only when the native request remains unresolved, detects the
-grant, advances to Input Monitoring, and registers shortcuts when both grants
-are available. The in-progress marker lives in the settings webview's local
-storage so a macOS-required **Quit & Reopen** resumes the same transaction.
-Microphone and Screen Recording remain just-in-time approvals because opening
-those protected devices is itself the honest capability test.
+setup** action installs the local models, requests Microphone access, requests
+Accessibility, opens the exact macOS pane only when a native request remains
+unresolved, detects each grant, advances to Input Monitoring, and registers
+shortcuts when all grants are available. The in-progress marker lives in the
+settings webview's local storage so a macOS-required **Quit & Reopen** resumes
+the same transaction.
+Screen Recording remains a just-in-time approval. Microphone authorization is
+an explicit setup and release gate because macOS can return silent audio before
+the user has answered its permission prompt.
 
 The desktop host keeps a low-frequency permission watcher alive until startup
 readiness succeeds; it does not abandon setup after an arbitrary timeout. The
@@ -298,9 +300,9 @@ and the prior Stable release before stopping Stable, then performs an atomic
 same-directory swap. It starts the new release and waits for `/health`; failure
 restores and relaunches the previous app automatically. Promotion also requires
 a fresh `runtime-readiness` event from the new app's exact version and process,
-proving Accessibility, Input Monitoring, and hotkey registration. Old log
-records cannot satisfy this gate. The explicit rollback command swaps to the
-archived bundle and restores the small set of compatibility-sensitive settings.
+proving Microphone, Accessibility, Input Monitoring, and hotkey registration.
+Old log records cannot satisfy this gate. The explicit rollback command swaps
+to the archived bundle and restores the small set of compatibility-sensitive settings.
 Models, tokens, audio, logs, and the Python environment are not duplicated into
 release archives.
 
@@ -338,8 +340,8 @@ build when testing a repair.
 
 The Quartz controller requires Input Monitoring to receive key events.
 Accessibility is separately required to read selections and insert dictated
-text. The app checks both and must not report shortcuts as registered while
-Input Monitoring is unavailable.
+text. Microphone access is required before dictation may start. The app checks
+all three and must not report runtime readiness while any one is unavailable.
 
 Developer builds are ad-hoc signed, so their designated requirement is the
 binary CDHash. Replacing the bundle changes that identity and can invalidate
@@ -360,8 +362,8 @@ versions; matching only the bundle identifier is not sufficient.
 2. Build gates: TypeScript/Vite, Rust formatting/tests/Clippy, Python tests,
    hashed lockfile drift, and diff whitespace.
 3. Bundle gates: bundled source equality and strict local code-signature check.
-4. Installed runtime: process identity, `/health`, Accessibility and Input
-   Monitoring for the final signed binary, synchronized source,
+4. Installed runtime: process identity, `/health`, Microphone, Accessibility,
+   and Input Monitoring for the final signed binary, synchronized source,
    `hotkeys-registered`, recorder visibility, real `hotkey-triggered`, and the
    matching action event.
 

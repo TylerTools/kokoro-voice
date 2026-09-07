@@ -12,6 +12,8 @@
 mod chords;
 mod dictation_protocol;
 mod hotkeys;
+#[cfg(target_os = "macos")]
+mod microphone_permission;
 mod playback;
 mod preferences;
 #[cfg(any(target_os = "macos", test))]
@@ -88,6 +90,8 @@ static SETUP_CANCELLED: AtomicBool = AtomicBool::new(false);
 static HOTKEYS_REGISTERED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static CHORDS_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static MICROPHONE_PERMISSION_REQUEST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static STATUS_PANEL: AtomicPtr<objc2_app_kit::NSPanel> = AtomicPtr::new(std::ptr::null_mut());
 #[cfg(target_os = "macos")]
@@ -754,10 +758,11 @@ fn permission_status() -> serde_json::Value {
     {
         let accessibility = macos_accessibility_client::accessibility::application_is_trusted();
         let input_monitoring = objc2_core_graphics::CGPreflightListenEventAccess();
+        let microphone = microphone_permission::status();
         serde_json::json!({
             "accessibility": if accessibility { "available" } else { "required" },
             "input_monitoring": if input_monitoring { "available" } else { "required" },
-            "microphone": "checked-on-use",
+            "microphone": microphone.as_permission_state(),
             "screen_capture": "checked-on-use",
         })
     }
@@ -779,6 +784,13 @@ fn run_capability_test(capability: String) -> serde_json::Value {
         "engine" => engine_status(),
         "permissions" => permission_status(),
         "microphone" => {
+            #[cfg(target_os = "macos")]
+            if !microphone_permission::status().is_authorized() {
+                return serde_json::json!({
+                    "ok": false,
+                    "code": "microphone-permission-required"
+                });
+            }
             let Some(paths) = Paths::current() else {
                 return serde_json::json!({ "ok": false, "code": "engine-missing" });
             };
@@ -808,8 +820,30 @@ fn record_capability(capability: String, passed: bool) -> Result<(), String> {
     write_json_atomic(&path, &report)
 }
 
+#[cfg(target_os = "macos")]
+fn request_microphone_permission(app: &AppHandle) -> bool {
+    if microphone_permission::status() != microphone_permission::Status::NotDetermined {
+        return false;
+    }
+    if MICROPHONE_PERMISSION_REQUEST_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return true;
+    }
+
+    let app = app.clone();
+    microphone_permission::request_access(move |granted| {
+        MICROPHONE_PERMISSION_REQUEST_IN_FLIGHT.store(false, Ordering::SeqCst);
+        structured_log(
+            "microphone-permission-result",
+            serde_json::json!({ "granted": granted }),
+        );
+        let _ = app.emit("microphone-permission-changed", granted);
+        let _ = log_runtime_readiness();
+    });
+    true
+}
+
 #[tauri::command]
-fn retry_permission(capability: String) -> serde_json::Value {
+fn retry_permission(app: AppHandle, capability: String) -> serde_json::Value {
     #[cfg(target_os = "macos")]
     if capability == "accessibility" {
         let available =
@@ -821,9 +855,20 @@ fn retry_permission(capability: String) -> serde_json::Value {
         let available = objc2_core_graphics::CGRequestListenEventAccess();
         return serde_json::json!({ "capability": capability, "available": available });
     }
+    #[cfg(target_os = "macos")]
+    if capability == "microphone" {
+        let requested = request_microphone_permission(&app);
+        let status = microphone_permission::status();
+        return serde_json::json!({
+            "capability": capability,
+            "available": status.is_authorized(),
+            "requested": requested,
+            "state": status.as_code(),
+        });
+    }
 
     #[cfg(not(target_os = "macos"))]
-    let _ = capability;
+    let _ = (app, capability);
 
     permission_status()
 }
@@ -1663,6 +1708,34 @@ fn dictation_start(app: &AppHandle) {
         "dictation-trigger",
         serde_json::json!({ "action": "start" }),
     );
+    #[cfg(target_os = "macos")]
+    {
+        let microphone = microphone_permission::status();
+        if !microphone.is_authorized() {
+            let requested = request_microphone_permission(app);
+            structured_log(
+                "dictation-start-rejected",
+                serde_json::json!({
+                    "code": "microphone-permission-required",
+                    "permission": microphone.as_code(),
+                    "requested": requested,
+                }),
+            );
+            show_player_notice(
+                app,
+                if requested {
+                    "Allow Microphone access, then dictate again."
+                } else {
+                    "Microphone access is off. Open HereWord Settings."
+                },
+            );
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            return;
+        }
+    }
     let target = match PlatformTextBackend::capture_target() {
         Ok(target) => Some(target),
         Err(ApplyOutcome::SecureField) => {
@@ -2097,12 +2170,23 @@ fn dictation_start(app: &AppHandle) {
         }) {
             set_dictation_status(&app2, &id, DictationStatus::DeviceUnavailable);
         } else if lines_out.iter().any(|line| {
-            dictation_protocol::parse(line) == dictation_protocol::Event::Error("no audio captured")
+            matches!(
+                dictation_protocol::parse(line),
+                dictation_protocol::Event::Error("no audio captured" | "nothing recognized")
+            )
         }) {
             set_dictation_status(&app2, &id, DictationStatus::Cancelled);
             show_player_notice(&app2, "No speech heard. Hold the shortcut while speaking.");
+            structured_log(
+                "dictation-failed",
+                serde_json::json!({ "session": id, "code": "no-speech" }),
+            );
         } else {
             set_dictation_status(&app2, &id, DictationStatus::Cancelled);
+            structured_log(
+                "dictation-failed",
+                serde_json::json!({ "session": id, "code": "unclassified" }),
+            );
         }
         if let Some(d) = app2.try_state::<Dictation>() {
             if let Ok(mut guard) = d.0.lock() {
@@ -2346,20 +2430,22 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
 
 fn log_runtime_readiness() -> bool {
     #[cfg(target_os = "macos")]
-    let (accessibility, input_monitoring) = (
+    let (accessibility, input_monitoring, microphone) = (
         macos_accessibility_client::accessibility::application_is_trusted(),
         objc2_core_graphics::CGPreflightListenEventAccess(),
+        microphone_permission::status().is_authorized(),
     );
     #[cfg(not(target_os = "macos"))]
-    let (accessibility, input_monitoring) = (true, true);
+    let (accessibility, input_monitoring, microphone) = (true, true, true);
     let hotkeys_registered = HOTKEYS_REGISTERED.load(Ordering::SeqCst);
-    let ready = accessibility && input_monitoring && hotkeys_registered;
+    let ready = accessibility && input_monitoring && microphone && hotkeys_registered;
     structured_log(
         "runtime-readiness",
         serde_json::json!({
             "ready": ready,
             "accessibility": accessibility,
             "input_monitoring": input_monitoring,
+            "microphone": microphone,
             "hotkeys_registered": hotkeys_registered,
         }),
     );
@@ -2382,7 +2468,8 @@ fn start_permission_readiness_watcher(app: AppHandle) {
             }
             let accessibility = macos_accessibility_client::accessibility::application_is_trusted();
             let input_monitoring = objc2_core_graphics::CGPreflightListenEventAccess();
-            if !accessibility || !input_monitoring {
+            let microphone = microphone_permission::status().is_authorized();
+            if !accessibility || !input_monitoring || !microphone {
                 continue;
             }
             if !HOTKEYS_REGISTERED.load(Ordering::SeqCst) {
@@ -2845,6 +2932,24 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             start_status_space_watcher(handle.clone());
             if variant::INPUT_CONTROLLER_ENABLED {
+                #[cfg(target_os = "macos")]
+                {
+                    let microphone = microphone_permission::status();
+                    if !microphone.is_authorized() {
+                        let requested = request_microphone_permission(&handle);
+                        structured_log(
+                            "microphone-permission-required",
+                            serde_json::json!({
+                                "permission": microphone.as_code(),
+                                "requested": requested,
+                            }),
+                        );
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                }
                 if let Err(error) = register_hotkeys(&handle) {
                     let permission_required = error.contains("Input Monitoring");
                     structured_log(

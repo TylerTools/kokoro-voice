@@ -182,6 +182,7 @@ function renderSetup(report: SetupReport): SetupStep {
   engineState.textContent = engineReady ? "Ready" : report.offline_ready ? "Starting…" : "Not installed";
   engineState.classList.toggle("setup-state--ready", engineReady);
   engineState.classList.toggle("setup-state--needed", !engineReady);
+  renderPermissionState("setup-state-microphone", report.permissions.microphone);
   renderPermissionState("setup-state-accessibility", report.permissions.accessibility);
   renderPermissionState("setup-state-input", report.permissions.input_monitoring);
 
@@ -191,6 +192,7 @@ function renderSetup(report: SetupReport): SetupStep {
   const labels: Record<SetupStep, string> = {
     download: "Download & finish setup",
     "engine-starting": "Starting…",
+    microphone: "Allow Microphone",
     accessibility: "Continue in Accessibility",
     "input-monitoring": "Continue in Input Monitoring",
     complete: "Setup complete",
@@ -212,7 +214,16 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
   setupEffectInFlight = true;
   requestedStep = step;
   try {
-    if (step === "accessibility") {
+    if (step === "microphone") {
+      setupMessage.textContent = "Allow HereWord to use the microphone. Setup will continue automatically.";
+      const result = await invoke<{ available?: boolean; requested?: boolean }>("retry_permission", { capability: "microphone" });
+      if (!result.available && !result.requested) {
+        await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
+      } else if (result.available) {
+        requestedStep = null;
+        window.setTimeout(() => { void refreshSetup(true); }, 0);
+      }
+    } else if (step === "accessibility") {
       setupMessage.textContent = "Turn on HereWord in Accessibility. This page will continue automatically.";
       const result = await invoke<{ available?: boolean }>("retry_permission", { capability: "accessibility" });
       if (!result.available) {
@@ -268,6 +279,11 @@ listen<{ pct: number; message: string }>("setup-progress", (e) => {
   wrap.hidden = false;
   bar.style.width = `${e.payload.pct}%`;
   msg.textContent = e.payload.message;
+});
+
+listen<boolean>("microphone-permission-changed", () => {
+  requestedStep = null;
+  void refreshSetup(true);
 });
 
 document.getElementById("setup-go")?.addEventListener("click", async (ev) => {

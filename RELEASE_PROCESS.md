@@ -16,8 +16,8 @@ Candidate is a reusable passive app with its own bundle ID, port, engine/config
 directories, and launch-at-login state. It does not register global hotkeys or
 start the macOS input controller, so it cannot compete with Stable. Use it for
 the UI, engine, settings, relaunch, resource lifecycle, and forced engine-restart
-checks. Accessibility, Input Monitoring, and physical shortcuts are deliberately
-reserved for the transactional Stable cutover.
+checks. Microphone, Accessibility, Input Monitoring, and physical shortcuts are
+deliberately reserved for the transactional Stable cutover.
 
 Candidate acceptance also requires a resource-lifecycle check on Apple Silicon:
 
@@ -73,9 +73,9 @@ Promotion verifies the bundle, archives current Stable and selected settings,
 stages the update beside the installed app while Stable remains available, and
 then quits, atomically swaps, and relaunches. It waits up to 90 seconds for the
 matching-version engine health endpoint. It also requires a fresh readiness
-event from that exact Stable process proving Accessibility, Input Monitoring,
-and hotkey registration. If any gate fails, it automatically restores the prior
-app.
+event from that exact Stable process proving Microphone, Accessibility, Input
+Monitoring, and hotkey registration. If any gate fails, it automatically
+restores the prior app.
 
 The default policy rejects ad-hoc-signed promotion because a changing signing
 identity can invalidate macOS privacy permissions. `--allow-ad-hoc` exists only

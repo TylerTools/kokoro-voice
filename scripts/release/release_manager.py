@@ -300,13 +300,14 @@ def wait_for_runtime_readiness(
                 "ready",
                 "accessibility",
                 "input_monitoring",
+                "microphone",
                 "hotkeys_registered",
             )
         ):
             return
         time.sleep(0.25)
     detail = json.dumps(latest, sort_keys=True) if latest else "no fresh readiness event"
-    raise ReleaseError(f"accessibility readiness failed: {detail}")
+    raise ReleaseError(f"permission readiness failed: {detail}")
 
 
 def acceptable_health(health: dict, expected_version: str | None) -> bool:

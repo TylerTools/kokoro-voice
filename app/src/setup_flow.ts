@@ -22,6 +22,7 @@ export type SetupReport = {
 export type SetupStep =
   | "download"
   | "engine-starting"
+  | "microphone"
   | "accessibility"
   | "input-monitoring"
   | "complete";
@@ -33,6 +34,7 @@ export function permissionReady(state: PermissionState | undefined): boolean {
 export function nextSetupStep(report: SetupReport): SetupStep {
   if (!report.offline_ready || report.engine.status === "not-installed") return "download";
   if (report.engine.status !== "ok") return "engine-starting";
+  if (!permissionReady(report.permissions.microphone)) return "microphone";
   if (!permissionReady(report.permissions.accessibility)) return "accessibility";
   if (!permissionReady(report.permissions.input_monitoring)) return "input-monitoring";
   return "complete";

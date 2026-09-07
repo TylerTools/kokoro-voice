@@ -275,6 +275,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 "ready": True,
                 "accessibility": True,
                 "input_monitoring": True,
+                "microphone": True,
                 "hotkeys_registered": True,
             },
         }
@@ -321,6 +322,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                         "ready": True,
                         "accessibility": True,
                         "input_monitoring": True,
+                        "microphone": True,
                         "hotkeys_registered": True,
                     },
                 }
@@ -339,6 +341,36 @@ class ReleaseWorkflowTests(unittest.TestCase):
             )
         finally:
             release_manager.app_pids = previous_app_pids
+
+    def test_readiness_wait_rejects_missing_microphone_permission(self):
+        event_file = self.config_dir / "events.jsonl"
+        event_file.parent.mkdir(parents=True)
+        event_file.write_text(
+            json.dumps(
+                {
+                    "timestamp_ms": 2000,
+                    "event": "runtime-readiness",
+                    "app_version": "2.1.1-beta.1",
+                    "process_id": 123,
+                    "fields": {
+                        "ready": False,
+                        "accessibility": True,
+                        "input_monitoring": True,
+                        "microphone": False,
+                        "hotkeys_registered": True,
+                    },
+                }
+            )
+            + "\n"
+        )
+        with self.assertRaisesRegex(release_manager.ReleaseError, "permission readiness failed"):
+            release_manager.wait_for_runtime_readiness(
+                self.runtime,
+                app=self.stable,
+                expected_version="2.1.1-beta.1",
+                process_ids={123},
+                not_before_ms=1000,
+            )
 
 
 if __name__ == "__main__":
