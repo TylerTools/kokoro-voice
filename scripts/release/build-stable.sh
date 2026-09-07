@@ -30,6 +30,6 @@ APPLE_SIGNING_IDENTITY="${identity}" npm run tauri -- build --bundles app "$@"
 
 bundle="${repo_root}/app/src-tauri/target/release/bundle/macos/HereWord.app"
 if [[ "${identity}" == "-" ]]; then
-  /usr/bin/codesign --force --deep --sign - "${bundle}"
+  /usr/bin/codesign --force --deep --entitlements "${repo_root}/app/src-tauri/Entitlements.plist" --sign - "${bundle}"
 fi
 /usr/bin/codesign --verify --deep --strict "${bundle}"

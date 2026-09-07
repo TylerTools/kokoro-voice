@@ -2066,7 +2066,7 @@ dependencies = [
 
 [[package]]
 name = "kokoro-voice-2-1"
-version = "2.1.1-beta.5"
+version = "2.1.1-beta.6"
 dependencies = [
  "accessibility",
  "accessibility-sys",

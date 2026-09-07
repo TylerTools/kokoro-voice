@@ -70,6 +70,20 @@ jobs:
           releaseDraft: false
           prerelease: true
           args: --target aarch64-apple-darwin
+      - name: Verify signed microphone entitlement
+        shell: bash
+        run: |
+          shopt -s nullglob
+          app_bundles=(app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app)
+          if [[ ${#app_bundles[@]} -ne 1 ]]; then
+            echo "Expected exactly one app bundle; found ${#app_bundles[@]}" >&2
+            exit 1
+          fi
+          entitlement_value="$(codesign -d --entitlements :- "${app_bundles[0]}" 2>/dev/null | plutil -extract com.apple.security.device.audio-input raw -)"
+          if [[ "$entitlement_value" != "true" ]]; then
+            echo "Signed app is missing the audio-input entitlement" >&2
+            exit 1
+          fi
       - name: Notarize and verify disk image
         shell: bash
         env:

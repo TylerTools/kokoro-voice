@@ -1,5 +1,6 @@
 import json
 import pathlib
+import plistlib
 import re
 import unittest
 
@@ -112,6 +113,29 @@ class VariantIsolationTests(unittest.TestCase):
             script = (ROOT / "scripts/release" / name).read_text()
             self.assertIn("codesign --force --deep", script)
             self.assertIn("codesign --verify --deep --strict", script)
+
+    def test_hardened_macos_bundle_can_request_audio_input(self):
+        config = json.loads((ROOT / "app/src-tauri/tauri.conf.json").read_text())
+        entitlements_path = ROOT / "app/src-tauri/Entitlements.plist"
+        entitlements = plistlib.loads(entitlements_path.read_bytes())
+        capabilities = json.loads(
+            (ROOT / "app/src-tauri/capabilities/default.json").read_text()
+        )
+
+        self.assertEqual(
+            config["bundle"]["macOS"]["entitlements"], "Entitlements.plist"
+        )
+        self.assertIs(entitlements["com.apple.security.device.audio-input"], True)
+        opener = next(
+            item
+            for item in capabilities["permissions"]
+            if isinstance(item, dict)
+            and item.get("identifier") == "opener:allow-open-url"
+        )
+        self.assertIn({"url": "x-apple.systempreferences:*"}, opener["allow"])
+        for name in ("build-candidate.sh", "build-stable.sh"):
+            script = (ROOT / "scripts/release" / name).read_text()
+            self.assertIn("--entitlements", script)
 
     def test_python_children_use_the_version_two_port_token_and_state(self):
         server = (ROOT / "server.py").read_text()

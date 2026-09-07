@@ -33,6 +33,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.codesign = self.root / "fake-codesign"
         self.codesign.write_text(
             "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            "  *--entitlements*)\n"
+            "    echo '<?xml version=\"1.0\" encoding=\"UTF-8\"?>'\n"
+            "    echo '<plist version=\"1.0\"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>'\n"
+            "    exit 0\n"
+            "    ;;\n"
+            "esac\n"
             "if [ \"$1\" = \"-dv\" ]; then\n"
             "  echo 'TeamIdentifier=not set' >&2\n"
             "fi\n"
@@ -125,6 +132,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         transition_codesign = self.root / "transition-codesign"
         transition_codesign.write_text(
             "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            "  *--entitlements*)\n"
+            "    echo '<?xml version=\"1.0\" encoding=\"UTF-8\"?>'\n"
+            "    echo '<plist version=\"1.0\"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>'\n"
+            "    exit 0\n"
+            "    ;;\n"
+            "esac\n"
             "if [ \"$1\" = \"-dv\" ]; then\n"
             "  case \"$*\" in\n"
             "    *artifacts*) echo 'TeamIdentifier=TEAM123' >&2 ;;\n"
@@ -164,6 +178,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     "designated_requirement": "identifier stable and team OTHER",
                 },
             )
+
+    def test_release_gate_rejects_missing_audio_input_entitlement(self):
+        missing = self.root / "missing-entitlement-codesign"
+        missing.write_text("#!/bin/sh\nexit 0\n")
+        missing.chmod(missing.stat().st_mode | stat.S_IXUSR)
+        runtime = {**self.runtime, "codesign": str(missing)}
+
+        with self.assertRaisesRegex(
+            release_manager.ReleaseError, "audio-input"
+        ):
+            release_manager.require_audio_input_entitlement(self.artifact, runtime)
 
     def test_promotion_and_rollback_are_reversible(self):
         self.config_dir.mkdir()

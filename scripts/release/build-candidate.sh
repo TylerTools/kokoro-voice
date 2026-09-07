@@ -18,10 +18,11 @@ cd "${repo_root}/app"
 npm run tauri -- build --bundles app --config src-tauri/tauri.candidate.conf.json "$@"
 
 bundle="${repo_root}/app/src-tauri/target/release/bundle/macos/HereWord Candidate.app"
+entitlements="${repo_root}/app/src-tauri/Entitlements.plist"
 identity=${KOKORO_CODESIGN_IDENTITY:--}
 if [[ "${identity}" == "-" ]]; then
-  /usr/bin/codesign --force --deep --sign - "${bundle}"
+  /usr/bin/codesign --force --deep --entitlements "${entitlements}" --sign - "${bundle}"
 else
-  /usr/bin/codesign --force --deep --options runtime --timestamp --sign "${identity}" "${bundle}"
+  /usr/bin/codesign --force --deep --options runtime --timestamp --entitlements "${entitlements}" --sign "${identity}" "${bundle}"
 fi
 /usr/bin/codesign --verify --deep --strict "${bundle}"

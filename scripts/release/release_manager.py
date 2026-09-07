@@ -133,6 +133,31 @@ def designated_requirement(app: Path, config: dict) -> str | None:
     return None
 
 
+def signed_entitlements(app: Path, config: dict) -> dict:
+    result = run(
+        [str(config["codesign"]), "-d", "--entitlements", ":-", str(app)],
+        check=False,
+    )
+    detail = f"{result.stdout}\n{result.stderr}"
+    start = detail.find("<?xml")
+    end = detail.rfind("</plist>")
+    if start < 0 or end < start:
+        return {}
+    try:
+        return plistlib.loads(detail[start : end + len("</plist>")].encode())
+    except (ValueError, plistlib.InvalidFileException):
+        return {}
+
+
+def require_audio_input_entitlement(app: Path, config: dict) -> None:
+    entitlements = signed_entitlements(app, config)
+    if entitlements.get("com.apple.security.device.audio-input") is not True:
+        raise ReleaseError(
+            "signed app is missing com.apple.security.device.audio-input; "
+            "Hardened Runtime would prevent microphone access"
+        )
+
+
 def verify_bundle(app: Path, expected_identifier: str, config: dict) -> dict:
     info = bundle_info(app)
     actual = info.get("CFBundleIdentifier")
@@ -420,6 +445,7 @@ def promote(
     vault = Path(config["vault"])
     stable_meta = verify_bundle(stable, STABLE_IDENTIFIER, config)
     artifact_meta = verify_bundle(artifact, STABLE_IDENTIFIER, config)
+    require_audio_input_entitlement(artifact, config)
     if artifact.resolve() == stable.resolve():
         raise ReleaseError("the installed Stable app cannot be its own update artifact")
     if stable_meta["version"] == artifact_meta["version"]:
@@ -613,6 +639,7 @@ def main(argv: list[str] | None = None) -> int:
                     else CANDIDATE_IDENTIFIER
                 )
                 result = verify_bundle(args.app, expected, config)
+                require_audio_input_entitlement(args.app, config)
             elif args.command == "promote":
                 if args.defer_accessibility_check:
                     config["skip_accessibility"] = True
