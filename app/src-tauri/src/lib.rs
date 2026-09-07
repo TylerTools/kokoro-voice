@@ -1464,6 +1464,17 @@ fn read_selection(app: AppHandle) {
     }
 }
 
+/// The Quartz event tap must return before Accessibility asks the foreground
+/// app for its selection. Chromium-family apps can reject that synchronous
+/// cross-process query while they are still completing the modifier release.
+#[cfg(target_os = "macos")]
+fn dispatch_read_from_hotkey(app: AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        read_selection(app);
+    });
+}
+
 /// Pause or resume the desktop-owned playback child.
 #[tauri::command]
 fn toggle_playback(app: AppHandle) -> String {
@@ -2354,7 +2365,7 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
             if let Err(e) = chords::watch(
                 move || {
                     hotkey_triggered(&read_event_app, hotkeys::Slot::Read);
-                    read_selection(read_app.clone());
+                    dispatch_read_from_hotkey(read_app.clone());
                 },
                 move || {
                     hotkey_triggered(&start_event_app, hotkeys::Slot::Dictate);

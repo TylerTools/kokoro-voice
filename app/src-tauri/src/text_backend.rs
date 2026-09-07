@@ -262,7 +262,7 @@ mod platform {
         base::{CFRange, CFType, TCFType},
         string::CFString,
     };
-    use objc2_app_kit::NSRunningApplication;
+    use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 
     fn custom(name: &str) -> AXAttribute<CFType> {
         AXAttribute::<CFType>::new(&CFString::new(name))
@@ -294,6 +294,16 @@ mod platform {
         }
         let any = AXUIElement::system_wide()
             .attribute(&custom(kAXFocusedUIElementAttribute))
+            .or_else(|_| {
+                // WebKit/Chromium can reject the system-wide lookup while a
+                // global modifier gesture is settling. Query the frontmost
+                // application directly without inspecting any unselected text.
+                let application = NSWorkspace::sharedWorkspace()
+                    .frontmostApplication()
+                    .ok_or(accessibility::Error::NotFound)?;
+                AXUIElement::application(application.processIdentifier())
+                    .attribute(&custom(kAXFocusedUIElementAttribute))
+            })
             .map_err(|_| ApplyOutcome::Unavailable)?;
         let element = any
             .downcast_into::<AXUIElement>()

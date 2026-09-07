@@ -1,6 +1,6 @@
 [package]
 name = "kokoro-voice-2-1"
-version = "2.1.1-beta.6"
+version = "2.1.1-beta.7"
 description = "Private local dictation and read-aloud desktop utility"
 authors = ["TYLERtools.net"]
 edition = "2021"
@@ -40,7 +40,7 @@ accessibility = "0.2.0"
 accessibility-sys = "0.2.0"
 macos-accessibility-client = "0.0.2"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSColor", "NSGraphics", "NSPanel", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "libc"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSColor", "NSGraphics", "NSPanel", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "NSWorkspace", "libc"] }
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGEvent"] }
 block2 = "0.6.2"

@@ -224,6 +224,18 @@ class VariantIsolationTests(unittest.TestCase):
         self.assertNotIn("MAC_READ_GESTURE", hotkeys)
         self.assertNotIn("MAC_DICTATE_GESTURE", hotkeys)
 
+    def test_macos_read_capture_runs_after_the_quartz_callback_returns(self):
+        lib = (ROOT / "app/src-tauri/src/lib.rs").read_text()
+        backend = (ROOT / "app/src-tauri/src/text_backend.rs").read_text()
+        cargo = (ROOT / "app/src-tauri/Cargo.toml").read_text()
+        self.assertIn("fn dispatch_read_from_hotkey(app: AppHandle)", lib)
+        self.assertIn("from_millis(25)", lib)
+        self.assertIn("dispatch_read_from_hotkey(read_app.clone())", lib)
+        self.assertNotIn("read_selection(read_app.clone())", lib)
+        self.assertIn("NSWorkspace::sharedWorkspace()", backend)
+        self.assertIn("frontmostApplication()", backend)
+        self.assertIn('"NSWorkspace"', cargo)
+
     def test_candidate_default_shortcuts_do_not_dispatch_stable(self):
         hotkeys = (ROOT / "app/src-tauri/src/hotkeys.rs").read_text()
         self.assertIn('option_env!("KOKORO_BUILD_CHANNEL")', hotkeys)
