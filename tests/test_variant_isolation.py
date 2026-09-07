@@ -136,6 +136,8 @@ class VariantIsolationTests(unittest.TestCase):
         for name in ("build-candidate.sh", "build-stable.sh"):
             script = (ROOT / "scripts/release" / name).read_text()
             self.assertIn("--entitlements", script)
+        release_workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertIn("'com\\.apple\\.security\\.device\\.audio-input'", release_workflow)
 
     def test_python_children_use_the_version_two_port_token_and_state(self):
         server = (ROOT / "server.py").read_text()
