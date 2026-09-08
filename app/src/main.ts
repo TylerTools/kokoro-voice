@@ -136,9 +136,9 @@ document.getElementById("run-system-check")?.addEventListener("click", async (ev
     const engine = report.engine as Record<string, string>;
     if (engine.status !== "ok") {
       detail.textContent = "The speech engine is not ready. Export diagnostics for details.";
-    } else if (permissions.accessibility !== "available") {
+    } else if (!["available", "not-required"].includes(permissions.accessibility)) {
       detail.textContent = "Accessibility is off. Enable Kokoro Voice, then run this check again.";
-    } else if (permissions.input_monitoring !== "available") {
+    } else if (!["available", "not-required"].includes(permissions.input_monitoring)) {
       detail.textContent = "Input Monitoring is off. Enable Kokoro Voice, then run this check again.";
     } else {
       detail.textContent = "System check passed. Shortcuts are listening.";
@@ -201,6 +201,8 @@ document.getElementById("setup-cancel")?.addEventListener("click", async (ev) =>
 
 // Show the real hotkeys rather than hardcoding them in the markup.
 type HotkeyResponse = Record<HotkeySlot, string> & {
+  modifier_labels: Record<string, string>;
+  separator: string;
   bindings: Record<HotkeySlot, { label: string; registered: boolean; configurable: boolean }>;
 };
 
@@ -221,6 +223,8 @@ listen<HotkeySlot>("hotkey-triggered", (event) => {
 });
 
 invoke<HotkeyResponse>("hotkeys").then((hk) => {
+  Object.assign(MOD_GLYPH, hk.modifier_labels);
+  modifierSeparator = hk.separator;
   const set = (id: string, v: string) => {
     const el = document.getElementById(id);
     if (el) el.textContent = pretty(v);
@@ -239,6 +243,7 @@ invoke<HotkeyResponse>("hotkeys").then((hk) => {
 });
 
 let testingDictation = false;
+let directInsertionAvailable = false;
 listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
   if (e.payload.state === "starting") {
     testingDictation = document.activeElement?.id === "dictation-test";
@@ -260,6 +265,7 @@ listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
 });
 
 listen<string>("dictated", async () => {
+  if (!directInsertionAvailable) return;
   const test = document.getElementById("dictation-test") as HTMLTextAreaElement;
   if (!testingDictation || !test || !test.value.trim()) return;
   testingDictation = false;
@@ -364,14 +370,37 @@ async function initPrefs() {
 const MOD_GLYPH: Record<string, string> = {
   Control: "\u2303", Alt: "\u2325", Shift: "\u21e7", Command: "\u2318",
 };
+let modifierSeparator = "";
 const MODIFIER_ORDER = ["Control", "Alt", "Shift", "Command"];
 
 function pretty(accel: string): string {
   return accel
     .split("+")
     .map((p) => MOD_GLYPH[p] ?? p.replace(/^Key/, "").replace(/^Digit/, ""))
-    .join("");
+    .join(modifierSeparator);
 }
+
+// Render the backend's capability contract without guessing the operating system.
+invoke<{ accessibility: string; direct_insertion: boolean }>("permission_status").then((capabilities) => {
+  directInsertionAvailable = capabilities.direct_insertion;
+  const setText = (id: string, text: string) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = text;
+  };
+  if (capabilities.accessibility === "not-required") {
+    for (const id of ["open-accessibility", "open-input-monitoring", "permission-list"]) {
+      document.getElementById(id)?.setAttribute("hidden", "");
+    }
+    setText("permissions-help", "Dictation uses your microphone. If access is blocked, check Windows Settings → Privacy & security → Microphone → Let desktop apps access your microphone.");
+    setText("screen-permission-help", "Uses Windows screen capture and local OCR.");
+  }
+  if (!capabilities.direct_insertion) {
+    document.getElementById("live-preview-field")?.setAttribute("hidden", "");
+    setText("dictation-help", "Hold your dictation shortcut, speak, then release. Your transcript is copied to the clipboard. Press Ctrl+V where you want to paste it.");
+    setText("dictation-test-help", "Hold your dictation shortcut, speak, then release. Click the box below and press Ctrl+V to check the transcript.");
+    setText("dictation-test-status", "Windows dictation uses the clipboard; automatic live typing is not available.");
+  }
+});
 
 function accelFrom(e: KeyboardEvent, observedModifiers: ReadonlySet<string>): string | null {
   const modifiers = new Set(observedModifiers);

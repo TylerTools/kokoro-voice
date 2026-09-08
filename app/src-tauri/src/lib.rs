@@ -14,6 +14,8 @@ mod dictation_protocol;
 mod hotkeys;
 mod text_backend;
 mod variant;
+#[cfg(target_os = "windows")]
+mod windows_chords;
 
 use std::process::{Child, Command, Stdio};
 #[cfg(target_os = "macos")]
@@ -161,6 +163,8 @@ fn is_installed() -> bool {
         && root.join("server.py").exists()
         && root.join("models/kokoro-v1.0.fp16.onnx").exists()
         && root.join("models/voices-v1.0.bin").exists()
+        && std::fs::read_to_string(config_dir().join("token"))
+            .is_ok_and(|token| !token.trim().is_empty())
 }
 
 #[derive(Clone)]
@@ -199,7 +203,7 @@ impl Paths {
 /// to Kokoro Voice 2.1. Keeping this in one place prevents a new call site from
 /// silently talking to version 1 on port 8123 or sharing its control files.
 fn client_command(paths: &Paths, script: &str) -> Command {
-    let mut command = Command::new(&paths.python);
+    let mut command = background_command(&paths.python);
     command
         .arg(paths.client(script))
         .current_dir(&paths.root)
@@ -211,8 +215,22 @@ fn client_command(paths: &Paths, script: &str) -> Command {
 
 // ── engine lifecycle ─────────────────────────────────────────────────────────
 
+/// Helpers must not create a console and steal focus from the dictation target.
+fn background_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let command = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut command = command;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        command
+    }
+    #[cfg(not(target_os = "windows"))]
+    command
+}
+
 fn start_engine(paths: &Paths) -> Option<Child> {
-    Command::new(&paths.python)
+    background_command(&paths.python)
         .args([
             "-m",
             "uvicorn",
@@ -565,9 +583,7 @@ fn find_or_install_uv(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     {
         let file = std::fs::File::open(&archive).map_err(|e| e.to_string())?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        let mut source = zip
-            .by_name("uv-x86_64-pc-windows-msvc/uv.exe")
-            .map_err(|e| e.to_string())?;
+        let mut source = zip.by_name("uv.exe").map_err(|e| e.to_string())?;
         let mut output = std::fs::File::create(&executable).map_err(|e| e.to_string())?;
         std::io::copy(&mut source, &mut output).map_err(|e| e.to_string())?;
     }
@@ -613,13 +629,15 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
     let uv = find_or_install_uv(app)?;
 
     // 3. Environment.
-    let venv_ok = Command::new(&uv)
-        .args(["venv", "--python", "3.12"])
-        .arg(root.join(".venv"))
-        .status()
-        .map_err(|e| format!("uv venv: {e}"))?;
-    if !venv_ok.success() {
-        return Err("could not create the Python environment".into());
+    if !python_path(&root).exists() {
+        let venv_ok = background_command(&uv)
+            .args(["venv", "--python", "3.12"])
+            .arg(root.join(".venv"))
+            .status()
+            .map_err(|e| format!("uv venv: {e}"))?;
+        if !venv_ok.success() {
+            return Err("could not create the Python environment".into());
+        }
     }
 
     emit_step(app, 30, "Installing components… (a minute or two)");
@@ -628,7 +646,7 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
     if !lock.exists() {
         return Err(format!("locked dependency set is missing: {lockfile}"));
     }
-    let st = Command::new(&uv)
+    let st = background_command(&uv)
         .args(["pip", "install", "--require-hashes", "-r"])
         .arg(&lock)
         .env("VIRTUAL_ENV", root.join(".venv"))
@@ -686,11 +704,11 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
     // populate the cache here rather than failing on its first dictation.
     emit_step(app, 88, "Downloading speech recognition…");
     #[cfg(target_os = "macos")]
-    let stt_prime = Command::new(python_path(&root)).env_remove("HF_HUB_OFFLINE").args(["-c",
+    let stt_prime = background_command(python_path(&root)).env_remove("HF_HUB_OFFLINE").args(["-c",
         "import numpy as np, mlx_whisper; from huggingface_hub import snapshot_download; p=snapshot_download('mlx-community/whisper-large-v3-turbo',revision='a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb'); mlx_whisper.transcribe(np.zeros(16000,dtype='float32'), path_or_hf_repo=p, language='en')"
     ]).status();
     #[cfg(target_os = "windows")]
-    let stt_prime = Command::new(python_path(&root)).env_remove("HF_HUB_OFFLINE").args(["-c",
+    let stt_prime = background_command(python_path(&root)).env_remove("HF_HUB_OFFLINE").env("HF_HUB_DISABLE_XET", "1").args(["-c",
         "from faster_whisper import WhisperModel; WhisperModel('dropbox-dash/faster-whisper-large-v3-turbo', revision='0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf', device='cpu', compute_type='int8')"
     ]).status();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -701,7 +719,7 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         emit_step(app, 90, "Optimizing speech recognition for this PC…");
-        let benchmark = Command::new(python_path(&root))
+        let benchmark = background_command(python_path(&root))
             .arg(root.join("benchmark_stt.py"))
             .arg("--output")
             .arg(config_dir().join("stt-backend.json"))
@@ -719,7 +737,7 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
         .map(|s| s.trim().is_empty())
         .unwrap_or(true)
     {
-        let out = Command::new(python_path(&root))
+        let out = background_command(python_path(&root))
             .args(["-c", "import secrets;print(secrets.token_urlsafe(32))"])
             .output()
             .map_err(|e| format!("token: {e}"))?;
@@ -995,6 +1013,7 @@ fn permission_status() -> serde_json::Value {
             "input_monitoring": if input_monitoring { "available" } else { "required" },
             "microphone": "checked-on-use",
             "screen_capture": "checked-on-use",
+            "direct_insertion": true,
         })
     }
 
@@ -1005,6 +1024,7 @@ fn permission_status() -> serde_json::Value {
             "input_monitoring": "not-required",
             "microphone": "checked-on-use",
             "screen_capture": "available",
+            "direct_insertion": false,
         })
     }
 }
@@ -1656,7 +1676,7 @@ fn set_clipboard(text: &str) {
     use std::io::Write;
     // Clipboard is the durable fallback; SendKeys performs the immediate paste
     // without interpolating dictated text into PowerShell source.
-    let mut copy = Command::new("powershell")
+    let mut copy = background_command("powershell")
         .args([
             "-NoProfile",
             "-Command",
@@ -2128,7 +2148,11 @@ fn dictation_start(app: &AppHandle) {
                         set_dictation_status(&app2, &id, DictationStatus::ClipboardFallback);
                         show_player_notice(
                             &app2,
-                            "Full message copied — press Command+V to paste it",
+                            if cfg!(target_os = "windows") {
+                                "Full message copied — press Ctrl+V to paste it"
+                            } else {
+                                "Full message copied — press Command+V to paste it"
+                            },
                         );
                     }
                 }
@@ -2223,7 +2247,7 @@ fn dictation_stop(app: &AppHandle) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn dictation_cancel(app: &AppHandle) {
     let id = app.try_state::<Dictation>().and_then(|d| {
         d.0.lock().ok().and_then(|mut session| {
@@ -2266,6 +2290,8 @@ fn hotkey_triggered(app: &AppHandle, slot: hotkeys::Slot) {
 
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     HOTKEYS_REGISTERED.store(false, Ordering::SeqCst);
+    #[cfg(target_os = "windows")]
+    windows_chords::suspend(true);
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
     let config = hotkeys::Config::from_preferences(&load_prefs());
@@ -2328,8 +2354,33 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let parse = |a: &str, what: &str| -> Result<Shortcut, String> {
+        windows_chords::configure(&config)?;
+        let gesture_app = app.clone();
+        windows_chords::start(move |action| {
+            use windows_chords::Action;
+            match action {
+                Action::Read => {
+                    hotkey_triggered(&gesture_app, hotkeys::Slot::Read);
+                    read_selection(gesture_app.clone());
+                }
+                Action::Snip => {
+                    hotkey_triggered(&gesture_app, hotkeys::Slot::Snip);
+                    snip_and_read(gesture_app.clone());
+                }
+                Action::DictateStart => {
+                    hotkey_triggered(&gesture_app, hotkeys::Slot::Dictate);
+                    dictation_start(&gesture_app);
+                }
+                Action::DictateStop => dictation_stop(&gesture_app),
+                Action::DictateCancel => dictation_cancel(&gesture_app),
+            }
+        })?;
+        let parse = |a: &str, what: &str| -> Result<Option<Shortcut>, String> {
+            if hotkeys::modifier_only(a) {
+                return Ok(None);
+            }
             a.parse::<Shortcut>()
+                .map(Some)
                 .map_err(|_| format!("{what} shortcut is not valid: {a}"))
         };
         let read = parse(&config.read, "read")?;
@@ -2337,30 +2388,41 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
         let snip = parse(&config.snip, "snip")?;
 
         let result = gs
-            .on_shortcuts([read, dictate, snip], move |app, sc, event| {
-                match event.state {
-                    ShortcutState::Pressed => {
-                        if sc == &read {
-                            hotkey_triggered(app, hotkeys::Slot::Read);
-                            read_selection(app.clone());
-                        } else if sc == &snip {
-                            hotkey_triggered(app, hotkeys::Slot::Snip);
-                            snip_and_read(app.clone());
-                        } else if sc == &dictate {
-                            hotkey_triggered(app, hotkeys::Slot::Dictate);
-                            dictation_start(app); // push to talk
+            .on_shortcuts(
+                [read, dictate, snip].into_iter().flatten(),
+                move |app, sc, event| {
+                    match event.state {
+                        ShortcutState::Pressed => {
+                            if Some(sc) == read.as_ref() {
+                                hotkey_triggered(app, hotkeys::Slot::Read);
+                                read_selection(app.clone());
+                            } else if Some(sc) == snip.as_ref() {
+                                hotkey_triggered(app, hotkeys::Slot::Snip);
+                                snip_and_read(app.clone());
+                            } else if Some(sc) == dictate.as_ref() {
+                                hotkey_triggered(app, hotkeys::Slot::Dictate);
+                                dictation_start(app); // push to talk
+                            }
+                        }
+                        ShortcutState::Released => {
+                            if Some(sc) == dictate.as_ref() {
+                                dictation_stop(app);
+                            }
                         }
                     }
-                    ShortcutState::Released => {
-                        if sc == &dictate {
-                            dictation_stop(app);
-                        }
-                    }
-                }
-            })
+                },
+            )
             .map_err(|e| format!("could not register hotkeys: {e}"));
         if result.is_ok() {
+            windows_chords::suspend(false);
             HOTKEYS_REGISTERED.store(true, Ordering::SeqCst);
+            structured_log(
+                "hotkeys-registered",
+                serde_json::json!({
+                    "profile": "windows-global-shortcuts",
+                    "read": config.read, "dictate": config.dictate, "snip": config.snip,
+                }),
+            );
         }
         result
     }
@@ -2373,6 +2435,8 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn begin_hotkey_recording(app: AppHandle) -> Result<(), String> {
     HOTKEYS_REGISTERED.store(false, Ordering::SeqCst);
+    #[cfg(target_os = "windows")]
+    windows_chords::suspend(true);
     app.global_shortcut()
         .unregister_all()
         .map_err(|e| format!("could not pause hotkeys for recording: {e}"))?;

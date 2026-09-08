@@ -38,7 +38,7 @@
 
     <section class="card" id="dictation-test-card">
       <h3>Test dictation</h3>
-      <p>Click below, hold your dictation shortcut, speak, and release. A successful test enables live typing.</p>
+      <p id="dictation-test-help">Click below, hold your dictation shortcut, speak, and release. A successful test enables live typing.</p>
       <textarea id="dictation-test" rows="3" placeholder="Your test dictation will appear here"></textarea>
       <small id="dictation-test-status">Live typing remains off until this test succeeds.</small>
     </section>
@@ -66,7 +66,7 @@
         <h3>Dictate</h3>
         <button class="rec" data-rec="dictate">Record…</button><kbd id="key-dictate">⇧⌘</kbd>
       </div>
-      <p>
+      <p id="dictation-help">
         Hold the key, speak, then let go. What you said is typed into whatever
          you were working in, and also copied to the clipboard as a backup — that
          way it is recoverable if the focused app rejects synthetic typing.
@@ -88,7 +88,7 @@
       <div class="row">
         <button data-cmd="snip_and_read">Try a snip now</button>
       </div>
-      <p class="perm">Needs <strong>Screen Recording</strong> permission.</p>
+      <p class="perm" id="screen-permission-help">Needs <strong>Screen Recording</strong> permission.</p>
     </section>
 
     <h2>Voice &amp; speed</h2>
@@ -115,7 +115,7 @@
         </div>
       </label>
 
-      <label class="field">
+      <label class="field" id="live-preview-field">
         <span><input id="live-preview" type="checkbox" /> Type dictation live</span>
         <small>Partial text may revise while speaking; only the final transcript is inserted.</small>
       </label>
@@ -134,12 +134,12 @@
 
     <h2>Permissions</h2>
     <section class="card">
-      <p>
+      <p id="permissions-help">
         macOS asks before any app can see what you have selected, hear your
         microphone, or read your screen. You'll be prompted the first time you
         use each feature. To change an answer later:
       </p>
-      <ul class="perms">
+      <ul class="perms" id="permission-list">
         <li><strong>Accessibility</strong> — read the selected text, type dictation</li>
         <li><strong>Input Monitoring</strong> — receive global shortcuts</li>
         <li><strong>Microphone</strong> — dictation</li>
