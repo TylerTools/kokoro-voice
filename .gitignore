@@ -7,6 +7,7 @@ models/*.bin
 
 # Runtime
 logs/
+/local-logs/
 *.wav
 __pycache__/
 *.pyc

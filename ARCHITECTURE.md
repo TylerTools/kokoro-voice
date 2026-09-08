@@ -12,7 +12,7 @@ physical input
     v
 Tauri desktop host --------------------------+
   | Quartz input controller (macOS)          |
-  | Windows complete-shortcut adapter        |
+  | Windows shortcut + modifier adapters     |
   | settings + tray + floating status        |
   | target-locked accessibility insertion    |
   +-------------------+----------------------+
@@ -37,6 +37,7 @@ Domain-heavy behavior belongs in focused modules:
 
 - `hotkeys.rs` owns shortcut meaning and validation;
 - `chords.rs` owns macOS modifier gesture timing and Quartz injection;
+- `windows_chords.rs` owns Windows modifier-only observation and hold timing;
 - `text_backend.rs` owns accessibility target identity and safe revisions.
 
 New behavior should enter through a module and be composed in `lib.rs`; do not
@@ -55,7 +56,17 @@ Quartz owns both forms on macOS; Tauri global shortcuts remain Windows-only.
 | Controller | Owns | Does not own |
 | --- | --- | --- |
 | macOS Quartz | Every recorded two-or-more-modifier gesture; every recorded complete accelerator; Escape cancellation; injected text events | Windows shortcuts |
-| Windows global shortcuts | Recorded Read, Dictate, and Snip accelerators | macOS and modifier-only gestures |
+| Windows global shortcuts | Recorded complete Read, Dictate, and Snip accelerators | macOS and modifier-only gestures |
+| Windows modifier hook | Recorded modifier-only gestures, hold/release timing and cancellation | Complete shortcuts, text insertion, suppression or logging of key input |
+
+`windows_chords.rs` observes modifier-only gestures without consuming any Windows
+key events. Read and Snip dispatch after all modifiers are released, provided no
+non-modifier key was used. Dictate starts after a 180 ms hold and stops on the
+first modifier release. A non-modifier key or extra modifier cancels the gesture;
+an in-progress modifier Dictate session is cancelled rather than transcribed.
+Recorder suspension and binding replacement clear pending state, and held keys
+must be released before the gesture can rearm. The hook only queues actions;
+engine, microphone and UI work execute outside its callback.
 
 ### Prefix arbitration
 

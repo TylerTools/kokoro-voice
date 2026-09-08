@@ -136,6 +136,7 @@ def get_clipboard() -> str:
         return subprocess.run(
             ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
             capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         ).stdout
     return subprocess.run(["xclip", "-o", "-selection", "clipboard"],
                           capture_output=True, text=True).stdout
@@ -155,6 +156,7 @@ def copy_selection() -> str:
              "Add-Type -AssemblyName System.Windows.Forms;"
              "[System.Windows.Forms.SendKeys]::SendWait('^c')"],
             capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     time.sleep(0.25)
     return get_clipboard()
