@@ -82,6 +82,10 @@ jobs:
           $installer = $installers[0]
           $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $($installer.Name)" | Set-Content -LiteralPath "$bundle/SHA256SUMS" -Encoding utf8
+          # Record the packaged executable itself so an installed copy can
+          # be proven to come from this build, not inferred from its path.
+          $appExe = Get-Item -LiteralPath 'app/src-tauri/target/release/kokoro-voice-2-1.exe'
+          $appHash = (Get-FileHash -LiteralPath $appExe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           @{
             build_kind = 'unsigned-development'
             source_commit = (git rev-parse HEAD)
@@ -89,6 +93,9 @@ jobs:
             installer = $installer.Name
             bytes = $installer.Length
             sha256 = $hash
+            app_executable = $appExe.Name
+            app_executable_bytes = $appExe.Length
+            app_executable_sha256 = $appHash
           } | ConvertTo-Json | Set-Content -LiteralPath "$bundle/build-info.json" -Encoding utf8
       - name: Upload unsigned Windows development installer
         if: runner.os == 'Windows'
@@ -99,5 +106,69 @@ jobs:
             app/src-tauri/target/release/bundle/nsis/*-setup.exe
             app/src-tauri/target/release/bundle/nsis/SHA256SUMS
             app/src-tauri/target/release/bundle/nsis/build-info.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build unsigned macOS development installer
+        if: runner.os == 'macOS'
+        working-directory: app
+        run: npm run tauri -- build --bundles app,dmg
+      - name: Record macOS artifact provenance and checksums
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=app/src-tauri/target/release/bundle/dmg
+          shopt -s nullglob
+          installers=("$bundle"/*.dmg)
+          if [[ ${#installers[@]} -ne 1 ]]; then
+            echo "Expected exactly one DMG installer, found ${#installers[@]}"
+            exit 1
+          fi
+          installer="${installers[0]}"
+          name="$(basename "$installer")"
+          hash="$(shasum -a 256 "$installer" | awk '{print $1}')"
+          bytes="$(stat -f%z "$installer")"
+          # Record the packaged executable itself so an installed copy can
+          # be proven to come from this build, not inferred from its path.
+          app_bundles=(app/src-tauri/target/release/bundle/macos/*.app)
+          if [[ ${#app_bundles[@]} -ne 1 ]]; then
+            echo "Expected exactly one .app bundle, found ${#app_bundles[@]}"
+            exit 1
+          fi
+          # Tauri names this binary from the bundle config, so discover it
+          # rather than hardcoding a name that a rename would silently break.
+          app_exes=("${app_bundles[0]}"/Contents/MacOS/*)
+          if [[ ${#app_exes[@]} -ne 1 ]]; then
+            echo "Expected exactly one executable in the .app, found ${#app_exes[@]}"
+            exit 1
+          fi
+          app_exe="${app_exes[0]}"
+          app_hash="$(shasum -a 256 "$app_exe" | awk '{print $1}')"
+          app_bytes="$(stat -f%z "$app_exe")"
+          commit="$(git rev-parse HEAD)"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          echo "$hash  $name" > "$bundle/SHA256SUMS"
+          cat > "$bundle/build-info.json" <<EOF
+          {
+            "build_kind": "unsigned-development",
+            "source_commit": "$commit",
+            "source_tree": "$tree",
+            "installer": "$name",
+            "bytes": $bytes,
+            "sha256": "$hash",
+            "app_executable": "$(basename "$app_exe")",
+            "app_executable_bytes": $app_bytes,
+            "app_executable_sha256": "$app_hash"
+          }
+          EOF
+      - name: Upload unsigned macOS development installer
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-macos-unsigned-${{ github.sha }}
+          path: |
+            app/src-tauri/target/release/bundle/dmg/*.dmg
+            app/src-tauri/target/release/bundle/dmg/SHA256SUMS
+            app/src-tauri/target/release/bundle/dmg/build-info.json
           if-no-files-found: error
           retention-days: 14
