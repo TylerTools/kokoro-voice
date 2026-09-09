@@ -2690,16 +2690,22 @@ mod live_dictation_tests {
 
 // ── app ──────────────────────────────────────────────────────────────────────
 
+fn show_settings(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        // A tray click must also restore Settings after it was minimized.
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         // A second launch would spawn a second engine and the two would fight
         // over the port. Focus the existing window instead.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
+            show_settings(app);
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
@@ -2812,7 +2818,7 @@ pub fn run() {
             )?;
             let menu = Menu::with_items(app, &[&read, &snip, &stop, &open, &quit])?;
 
-            TrayIconBuilder::new()
+            let tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(true)
@@ -2820,19 +2826,35 @@ pub fn run() {
                     "read" => read_selection(app.clone()),
                     "snip" => snip_and_read(app.clone()),
                     "stop" => stop_speaking(app.clone()),
-                    "open" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "open" => show_settings(app),
                     "quit" => {
                         stop_engine(app);
                         app.exit(0);
                     }
                     _ => {}
-                })
-                .build(app)?;
+                });
+
+            // Windows uses left-click for Settings; right-click keeps the menu.
+            // Leave macOS menu-bar interaction unchanged and create only one icon.
+            #[cfg(target_os = "windows")]
+            let tray = tray
+                .tooltip(format!("{} — Settings", variant::DISPLAY_NAME))
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        }
+                    ) {
+                        show_settings(tray.app_handle());
+                    }
+                });
+
+            tray.build(app)?;
 
             Ok(())
         })
