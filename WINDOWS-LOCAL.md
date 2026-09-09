@@ -3,6 +3,13 @@
 Open **Kokoro Voice 2.1** from the Start menu or its desktop shortcut.
 The desktop app owns the local speech engine on `127.0.0.1:8125`.
 
+The Windows tray update in source adds the tooltip **Kokoro Voice 2.1 — Settings**.
+Left-click the Kokoro icon beside the clock to open or restore Settings;
+right-click for Settings, Read selection, Snip & read, Stop, and Quit.
+Windows may place the icon under the **^** hidden-icons arrow; drag it beside the
+clock if desired. This source update requires a new build/install and is not in
+the previously published beta installer.
+
 | Action | Default shortcut |
 | --- | --- |
 | Read selected text | Ctrl + Alt + Shift + U |

@@ -69,6 +69,31 @@ class VariantIsolationTests(unittest.TestCase):
         self.assertTrue(player["visibleOnAllWorkspaces"])
         self.assertFalse(player["focusable"])
 
+    def test_windows_tray_opens_settings_without_changing_the_mac_menu(self):
+        lib = (ROOT / "app/src-tauri/src/lib.rs").read_text(encoding="utf-8")
+        self.assertIn('.show_menu_on_left_click(true)', lib)
+        self.assertRegex(
+            lib,
+            r'#\[cfg\(target_os = "windows"\)\]\s+let tray = tray\s+'
+            r'\.tooltip\(format!\("\{\} — Settings", variant::DISPLAY_NAME\)\)\s+'
+            r'\.show_menu_on_left_click\(false\)',
+        )
+        self.assertIn('button: MouseButton::Left', lib)
+        self.assertIn('button_state: MouseButtonState::Up', lib)
+        self.assertIn('show_settings(tray.app_handle());', lib)
+        self.assertIn('"open" => show_settings(app)', lib)
+
+    def test_settings_restores_the_existing_window(self):
+        lib = (ROOT / "app/src-tauri/src/lib.rs").read_text(encoding="utf-8")
+        helper = lib.split('fn show_settings(app: &AppHandle) {', 1)[1].split(
+            '#[cfg_attr(mobile', 1
+        )[0]
+        self.assertIn('app.get_webview_window("main")', helper)
+        self.assertIn('window.unminimize()', helper)
+        self.assertIn('window.show()', helper)
+        self.assertIn('window.set_focus()', helper)
+        self.assertNotIn('WebviewWindowBuilder', helper)
+
     def test_default_complete_shortcuts_do_not_match_version_one(self):
         hotkeys = (ROOT / "app/src-tauri/src/hotkeys.rs").read_text()
         for shortcut in (

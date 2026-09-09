@@ -67,3 +67,37 @@ jobs:
             echo "Potential sensitive diagnostic field found"
             exit 1
           fi
+      - name: Build unsigned Windows development installer
+        if: runner.os == 'Windows'
+        working-directory: app
+        run: npm run tauri -- build --bundles nsis
+      - name: Record Windows artifact provenance and checksums
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = 'app/src-tauri/target/release/bundle/nsis'
+          $installers = @(Get-ChildItem -LiteralPath $bundle -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          $installer = $installers[0]
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($installer.Name)" | Set-Content -LiteralPath "$bundle/SHA256SUMS" -Encoding utf8
+          @{
+            build_kind = 'unsigned-development'
+            source_commit = (git rev-parse HEAD)
+            source_tree = (git rev-parse 'HEAD^{tree}')
+            installer = $installer.Name
+            bytes = $installer.Length
+            sha256 = $hash
+          } | ConvertTo-Json | Set-Content -LiteralPath "$bundle/build-info.json" -Encoding utf8
+      - name: Upload unsigned Windows development installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-windows-unsigned-${{ github.sha }}
+          path: |
+            app/src-tauri/target/release/bundle/nsis/*-setup.exe
+            app/src-tauri/target/release/bundle/nsis/SHA256SUMS
+            app/src-tauri/target/release/bundle/nsis/build-info.json
+          if-no-files-found: error
+          retention-days: 14
