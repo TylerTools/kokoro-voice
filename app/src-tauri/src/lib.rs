@@ -102,6 +102,8 @@ static STATUS_WINDOW_WIDTH_BITS: AtomicU64 = AtomicU64::new(0);
 static STATUS_WINDOW_HEIGHT_BITS: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static STATUS_SPACE_WATCHER_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static STATUS_SPACE_RECOVERY_ARMED: AtomicBool = AtomicBool::new(true);
 #[cfg(unix)]
 static SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 #[cfg(target_os = "macos")]
@@ -1029,13 +1031,40 @@ fn status_window_style_mask() -> objc2_app_kit::NSWindowStyleMask {
 }
 
 #[cfg(target_os = "macos")]
-fn status_window_needs_reassertion(requested: bool, visible: bool, on_active_space: bool) -> bool {
-    requested && (!visible || !on_active_space)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StatusWindowRecovery {
+    None,
+    Reassert,
+    Recreate,
+}
+
+#[cfg(target_os = "macos")]
+fn status_window_recovery(
+    requested: bool,
+    visible: bool,
+    on_active_space: bool,
+    space_recovery_armed: bool,
+) -> StatusWindowRecovery {
+    if !requested {
+        return StatusWindowRecovery::None;
+    }
+    if !on_active_space {
+        return if space_recovery_armed {
+            StatusWindowRecovery::Recreate
+        } else {
+            StatusWindowRecovery::None
+        };
+    }
+    if !visible {
+        return StatusWindowRecovery::Reassert;
+    }
+    StatusWindowRecovery::None
 }
 
 #[cfg(target_os = "macos")]
 fn set_status_window_requested(requested: bool) {
     STATUS_WINDOW_REQUESTED.store(requested, Ordering::SeqCst);
+    STATUS_SPACE_RECOVERY_ARMED.store(requested, Ordering::SeqCst);
     let (lock, changed) = STATUS_SPACE_STATE.get_or_init(|| (Mutex::new(false), Condvar::new()));
     if let Ok(mut active) = lock.lock() {
         *active = requested;
@@ -1063,11 +1092,74 @@ fn place_status_panel(panel: &objc2_app_kit::NSPanel, width: f64, height: f64) {
     panel.setFrame_display(frame, true);
 }
 
+#[cfg(target_os = "macos")]
+fn configure_status_panel(panel: &objc2_app_kit::NSPanel, width: f64, height: f64) {
+    place_status_panel(panel, width, height);
+    panel.setCollectionBehavior(status_window_collection_behavior());
+    panel.setHidesOnDeactivate(false);
+    panel.setCanHide(false);
+    panel.setLevel(status_window_level());
+}
+
+#[cfg(target_os = "macos")]
+fn new_status_panel(
+    main_thread: objc2::MainThreadMarker,
+    frame: objc2_foundation::NSRect,
+) -> objc2::rc::Retained<objc2_app_kit::NSPanel> {
+    let panel = objc2_app_kit::NSPanel::initWithContentRect_styleMask_backing_defer(
+        main_thread.alloc(),
+        frame,
+        status_window_style_mask(),
+        objc2_app_kit::NSBackingStoreType::Buffered,
+        false,
+    );
+    panel.setFloatingPanel(true);
+    panel.setBecomesKeyOnlyIfNeeded(true);
+    panel.setOpaque(false);
+    panel.setHasShadow(false);
+    unsafe { panel.setReleasedWhenClosed(false) };
+    panel
+}
+
+/// Replace a panel that AppKit left bound to an inactive Space. Reordering the
+/// same NSPanel cannot change that binding; a new panel is born on the current
+/// Space, then receives the existing webview without activating HereWord.
+#[cfg(target_os = "macos")]
+fn recreate_status_panel_for_active_space(
+    panel_pointer: *mut objc2_app_kit::NSPanel,
+    width: f64,
+    height: f64,
+) -> Option<*mut objc2_app_kit::NSPanel> {
+    let main_thread = objc2::MainThreadMarker::new()?;
+    let previous = unsafe { &*panel_pointer };
+    let content_view = previous.contentView()?;
+    let replacement = new_status_panel(main_thread, previous.frame());
+    replacement.setBackgroundColor(Some(&previous.backgroundColor()));
+
+    // Retain the webview while its old panel receives a harmless placeholder.
+    // AppKit views may belong to only one window at a time.
+    let placeholder = objc2_app_kit::NSView::initWithFrame(main_thread.alloc(), previous.frame());
+    previous.setContentView(Some(&placeholder));
+    replacement.setContentView(Some(&content_view));
+    configure_status_panel(&replacement, width, height);
+
+    previous.orderOut(None);
+    replacement.orderFrontRegardless();
+    let replacement_pointer = objc2::rc::Retained::into_raw(replacement);
+    STATUS_PANEL.store(replacement_pointer, Ordering::SeqCst);
+
+    // STATUS_PANEL owned the retain created by into_raw when the old panel was
+    // installed. The atomic now owns the replacement, so release the old one.
+    drop(unsafe { objc2::rc::Retained::from_raw(panel_pointer) });
+    Some(replacement_pointer)
+}
+
 /// macOS can leave an already-visible all-Spaces panel assigned to the Space
 /// it was first ordered on when the user moves into another app's full-screen
 /// Space. The audio client remains alive, so hiding the only controls is an
-/// invalid state. Reassert the existing panel only after AppKit reports that
-/// it has fallen off the active Space; normal app switches do no extra work.
+/// invalid state. Recreate the panel once when it falls off the active Space;
+/// repeatedly ordering the same panel cannot change its Space assignment and
+/// previously produced thousands of retries without restoring the controls.
 #[cfg(target_os = "macos")]
 fn start_status_space_watcher(app: AppHandle) {
     if STATUS_SPACE_WATCHER_STARTED.swap(true, Ordering::SeqCst) {
@@ -1111,25 +1203,55 @@ fn start_status_space_watcher(app: AppHandle) {
                 return;
             }
             let panel = unsafe { &*panel_pointer };
-            if !status_window_needs_reassertion(true, panel.isVisible(), panel.isOnActiveSpace()) {
-                return;
+            let visible = panel.isVisible();
+            let on_active_space = panel.isOnActiveSpace();
+            if on_active_space {
+                STATUS_SPACE_RECOVERY_ARMED.store(true, Ordering::SeqCst);
             }
             let width = f64::from_bits(STATUS_WINDOW_WIDTH_BITS.load(Ordering::SeqCst));
             let height = f64::from_bits(STATUS_WINDOW_HEIGHT_BITS.load(Ordering::SeqCst));
-            panel.setCollectionBehavior(status_window_collection_behavior());
-            panel.setHidesOnDeactivate(false);
-            panel.setCanHide(false);
-            panel.setLevel(status_window_level());
-            place_status_panel(panel, width, height);
-            panel.orderFrontRegardless();
-            structured_log(
-                "status-window-reasserted",
-                serde_json::json!({
-                    "visible": panel.isVisible(),
-                    "active_space": panel.isOnActiveSpace(),
-                    "level": panel.level(),
-                }),
-            );
+            match status_window_recovery(
+                true,
+                visible,
+                on_active_space,
+                STATUS_SPACE_RECOVERY_ARMED.load(Ordering::SeqCst),
+            ) {
+                StatusWindowRecovery::None => {}
+                StatusWindowRecovery::Reassert => {
+                    configure_status_panel(panel, width, height);
+                    panel.orderFrontRegardless();
+                    structured_log(
+                        "status-window-reasserted",
+                        serde_json::json!({
+                            "visible": panel.isVisible(),
+                            "active_space": panel.isOnActiveSpace(),
+                            "level": panel.level(),
+                        }),
+                    );
+                }
+                StatusWindowRecovery::Recreate => {
+                    if STATUS_SPACE_RECOVERY_ARMED.swap(false, Ordering::SeqCst) {
+                        if let Some(pointer) =
+                            recreate_status_panel_for_active_space(panel_pointer, width, height)
+                        {
+                            let replacement = unsafe { &*pointer };
+                            structured_log(
+                                "status-window-recreated",
+                                serde_json::json!({
+                                    "visible": replacement.isVisible(),
+                                    "active_space": replacement.isOnActiveSpace(),
+                                    "level": replacement.level(),
+                                }),
+                            );
+                        } else {
+                            structured_log(
+                                "status-window-recovery-failed",
+                                serde_json::json!({ "reason": "panel-recreation-unavailable" }),
+                            );
+                        }
+                    }
+                }
+            }
         });
     });
 }
@@ -1160,19 +1282,8 @@ fn show_status_window_without_activation(window: &tauri::WebviewWindow, width: f
             frame.origin.y += frame.size.height - height - 14.0;
             frame.size.width = width;
             frame.size.height = height;
-            let panel = objc2_app_kit::NSPanel::initWithContentRect_styleMask_backing_defer(
-                main_thread.alloc(),
-                frame,
-                status_window_style_mask(),
-                objc2_app_kit::NSBackingStoreType::Buffered,
-                false,
-            );
-            panel.setFloatingPanel(true);
-            panel.setBecomesKeyOnlyIfNeeded(true);
-            panel.setOpaque(false);
+            let panel = new_status_panel(main_thread, frame);
             panel.setBackgroundColor(Some(&native.backgroundColor()));
-            panel.setHasShadow(false);
-            unsafe { panel.setReleasedWhenClosed(false) };
             if let Some(content_view) = native.contentView() {
                 panel.setContentView(Some(&content_view));
                 // Tao's resize delegate assumes its NSWindow always has a
@@ -1193,15 +1304,11 @@ fn show_status_window_without_activation(window: &tauri::WebviewWindow, width: f
         STATUS_WINDOW_WIDTH_BITS.store(width.to_bits(), Ordering::SeqCst);
         STATUS_WINDOW_HEIGHT_BITS.store(height.to_bits(), Ordering::SeqCst);
         set_status_window_requested(true);
-        place_status_panel(panel, width, height);
-        panel.setCollectionBehavior(status_window_collection_behavior());
-        panel.setHidesOnDeactivate(false);
-        panel.setCanHide(false);
+        configure_status_panel(panel, width, height);
         // Do this synchronously in the same main-thread turn as ordering the
         // window. Tauri's set_always_on_top queues an asynchronous floating-
         // level update that can race this order operation and leave the player
         // under a full-screen app or on another Space.
-        panel.setLevel(status_window_level());
         panel.orderFrontRegardless();
         structured_log(
             "status-window-shown",
@@ -2731,11 +2838,27 @@ mod live_dictation_tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn status_window_is_reasserted_only_when_requested_and_off_space() {
-        assert!(status_window_needs_reassertion(true, true, false));
-        assert!(status_window_needs_reassertion(true, false, true));
-        assert!(!status_window_needs_reassertion(true, true, true));
-        assert!(!status_window_needs_reassertion(false, false, false));
+    fn status_window_recreates_once_when_it_leaves_the_active_space() {
+        assert_eq!(
+            status_window_recovery(true, true, false, true),
+            StatusWindowRecovery::Recreate
+        );
+        assert_eq!(
+            status_window_recovery(true, true, false, false),
+            StatusWindowRecovery::None
+        );
+        assert_eq!(
+            status_window_recovery(true, false, true, true),
+            StatusWindowRecovery::Reassert
+        );
+        assert_eq!(
+            status_window_recovery(true, true, true, true),
+            StatusWindowRecovery::None
+        );
+        assert_eq!(
+            status_window_recovery(false, false, false, true),
+            StatusWindowRecovery::None
+        );
     }
 
     #[test]

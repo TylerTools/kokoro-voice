@@ -125,7 +125,11 @@ asynchronous `set_always_on_top`: that maps only to the floating-palette level,
 can race the order operation, and an ordinary window remains ineligible for
 another application's full-screen Space. The hidden Tauri owner retains a
 placeholder content view after the player webview is transferred; Tao's window
-delegate requires that invariant during resize and shutdown callbacks.
+delegate requires that invariant during resize and shutdown callbacks. If
+AppKit nevertheless leaves an existing panel assigned to the prior Space, the
+watcher recreates it once on the active Space and transfers the same webview.
+It does not repeatedly reorder the stale panel, which cannot change that
+panel's Space assignment and can flood the event log without restoring UI.
 
 The producer and player share stop state. Stopping only the current audio
 process is incorrect because a later synthesized chunk would restart playback.
