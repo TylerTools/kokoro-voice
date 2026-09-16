@@ -10,6 +10,7 @@ fn main() {
         "KOKORO_CLIENT_HOST",
         "KOKORO_DIAGNOSTICS_FILE",
         "KOKORO_TTS_CPU_MEM_ARENA",
+        "HEREWORD_BUILD_REVISION",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }

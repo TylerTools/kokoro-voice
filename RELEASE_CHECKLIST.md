@@ -3,6 +3,8 @@
 A draft release must not be published until every item is recorded as passed.
 
 - [ ] CI passes on macOS ARM64 and Windows x64.
+- [ ] macOS and Windows manifests report the same version, tag, and immutable Git revision.
+- [ ] Both platform artifacts remain in one draft release until physical acceptance is recorded.
 - [ ] macOS signature and notarization verified with `codesign` and `spctl`.
 - [ ] Windows Authenticode signature verified on the installer and installed executable.
 - [ ] Installer SHA-256 hashes recorded in the release.
@@ -19,4 +21,5 @@ A draft release must not be published until every item is recorded as passed.
 - [ ] Secure/password fields reject dictation before microphone capture.
 - [ ] Pinned runtime and model downloads pass hash, interruption, resume, and atomic-install tests.
 - [ ] Prompted updater metadata and artifacts verify with the release updater key; previous signed installer recovery passes.
+- [ ] The public binary-only release endpoint is configured without embedding a private-repository token.
 - [ ] Local structured logs rotate and the seeded-secret privacy scan passes.

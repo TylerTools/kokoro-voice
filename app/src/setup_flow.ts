@@ -9,6 +9,7 @@
 export type PermissionState = "available" | "required" | "not-required" | "checked-on-use";
 
 export type SetupReport = {
+  app: import("./platform_ui").AppInfo;
   engine: { status?: string };
   permissions: {
     accessibility?: PermissionState;
@@ -28,7 +29,9 @@ export type SetupStep =
   | "complete";
 
 export function permissionReady(state: PermissionState | undefined): boolean {
-  return state === "available" || state === "not-required";
+  // Windows asks for microphone permission when capture first begins. That is
+  // a valid ready state, not an incomplete macOS-style settings transaction.
+  return state === "available" || state === "not-required" || state === "checked-on-use";
 }
 
 export function nextSetupStep(report: SetupReport): SetupStep {

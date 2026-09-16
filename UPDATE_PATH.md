@@ -30,9 +30,10 @@ legacy app automatically if readiness fails.
 
 ## Download-and-install phase
 
-The remaining delivery improvement is Tauri's signed updater using the private
-GitHub Releases endpoint. This requires two independent trust
-layers:
+The remaining delivery improvement is Tauri's signed updater using an approved
+public binary-only GitHub Releases endpoint. The source repository may remain
+private; the desktop app must never embed or store a source-repository token.
+This requires two independent trust layers:
 
 - Apple Developer ID signing and notarization identify the app to macOS and
   preserve privacy grants.
@@ -44,7 +45,8 @@ secrets, never in this repository. The public updater key and HTTPS endpoint can
 then be embedded in the app. Release acceptance remains Candidate QC first,
 followed by a signed Stable artifact and the existing transactional rollback.
 
-The updater remains disabled until its dedicated update-signing key and release
-manifest are configured. Apple signing and the GitHub release repository are
-already in place; no further macOS privacy reconnection should be needed for
-ordinary same-identity updates.
+The updater remains disabled until its dedicated update-signing key, public
+binary repository, and release manifest are configured. Apple signing is
+already in place; Windows signing and the public binary endpoint are not. No
+further macOS privacy reconnection should be needed for ordinary same-identity
+updates.

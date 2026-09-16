@@ -3,6 +3,20 @@
 This workflow keeps the installed Stable app running throughout development.
 Installing, promoting, or rolling back remains a deliberate operator action.
 
+## Paired release draft
+
+`.github/workflows/release.yml` builds macOS ARM64 and Windows x64 from one
+immutable Git revision. Each job writes a signed-artifact manifest, and the
+workflow rejects mismatched version, tag, revision, platform, or architecture.
+The GitHub release remains a draft after both builds.
+
+Windows signing runs only in the protected `windows-release-signing`
+environment and requires the Azure Artifact Signing settings named in the
+workflow. Do not publish the draft until every item in `RELEASE_CHECKLIST.md`
+is recorded, including physical tests on clean CPU-only and NVIDIA Windows
+machines. Public Windows delivery must use an approved public binary-only
+release repository; never embed a source-repository token in the app.
+
 ## 1. Build and test Candidate
 
 ```sh

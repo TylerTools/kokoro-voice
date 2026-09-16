@@ -16,6 +16,13 @@ import {
   type SetupReport,
   type SetupStep,
 } from "./setup_flow";
+import {
+  formatShortcut,
+  permissionSettingsName,
+  setupIntro,
+  versionLabel,
+  type AppInfo,
+} from "./platform_ui";
 
 type Health = {
   status: string;
@@ -47,6 +54,22 @@ function isHotkeySlot(value: string | undefined): value is HotkeySlot {
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
 const detail = document.getElementById("detail") as HTMLSpanElement;
+let currentAppInfo: AppInfo = {
+  app_version: "",
+  build_revision: "development",
+  platform: "unknown",
+  architecture: "",
+  paste_shortcut: "the paste shortcut",
+};
+
+function renderAppIdentity(info: AppInfo): void {
+  currentAppInfo = info;
+  document.body.dataset.platform = info.platform;
+  const intro = document.getElementById("setup-intro");
+  if (intro) intro.textContent = setupIntro(info);
+  const version = document.getElementById("app-version");
+  if (version) version.textContent = versionLabel(info);
+}
 
 /**
  * Poll the engine and describe it in plain language.
@@ -146,9 +169,8 @@ document.getElementById("remove-local-data")?.addEventListener("click", async ()
   window.location.reload();
 });
 
-// One guided setup transaction. macOS still owns its protected approval
-// switches; HereWord requests each one, opens the exact pane, detects the grant,
-// advances to the next step, and resumes after a required app restart.
+// One guided setup transaction. Rust reports the platform's permission facts;
+// this shared UI renders only the steps that apply to that platform.
 const GUIDED_SETUP_KEY = "kokoro-guided-setup-active";
 const setupCard = document.getElementById("setup") as HTMLElement;
 const setupButton = document.getElementById("setup-go") as HTMLButtonElement;
@@ -170,12 +192,18 @@ function renderPermissionState(id: string, state: PermissionState | undefined): 
   const element = document.getElementById(id);
   if (!element) return;
   const ready = permissionReady(state);
-  element.textContent = ready ? "Ready" : state === "checked-on-use" ? "Asked on first use" : "Needs approval";
+  element.textContent = state === "checked-on-use" ? "On first use" : ready ? "Ready" : "Needs approval";
   element.classList.toggle("setup-state--ready", ready);
-  element.classList.toggle("setup-state--needed", !ready && state !== "checked-on-use");
+  element.classList.toggle("setup-state--needed", !ready);
+}
+
+function renderPermissionRow(id: string, state: PermissionState | undefined): void {
+  const element = document.getElementById(id);
+  if (element) element.hidden = state === "not-required";
 }
 
 function renderSetup(report: SetupReport): SetupStep {
+  renderAppIdentity(report.app);
   const step = nextSetupStep(report);
   const engineReady = report.offline_ready && report.engine.status === "ok";
   const engineState = document.getElementById("setup-state-engine") as HTMLElement;
@@ -185,6 +213,9 @@ function renderSetup(report: SetupReport): SetupStep {
   renderPermissionState("setup-state-microphone", report.permissions.microphone);
   renderPermissionState("setup-state-accessibility", report.permissions.accessibility);
   renderPermissionState("setup-state-input", report.permissions.input_monitoring);
+  renderPermissionRow("setup-row-microphone", report.permissions.microphone);
+  renderPermissionRow("setup-row-accessibility", report.permissions.accessibility);
+  renderPermissionRow("setup-row-input", report.permissions.input_monitoring);
 
   setupCard.hidden = step === "complete";
   setupButton.hidden = step === "complete";
@@ -343,7 +374,8 @@ listen<HotkeySlot>("hotkey-triggered", (event) => {
   awaitingHotkeyVerification = null;
 });
 
-invoke<HotkeyResponse>("hotkeys").then((hk) => {
+async function refreshHotkeys(): Promise<void> {
+  const hk = await invoke<HotkeyResponse>("hotkeys");
   const set = (id: string, v: string) => {
     const el = document.getElementById(id);
     if (el) el.textContent = pretty(v);
@@ -359,7 +391,7 @@ invoke<HotkeyResponse>("hotkeys").then((hk) => {
   if (Object.values(hk.bindings).some((binding) => !binding.registered)) {
     detail.textContent = "Shortcuts need setup. Use Finish setup above; HereWord will detect the approvals.";
   }
-});
+}
 
 listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
   const messages: Record<DictationState, string> = {
@@ -368,11 +400,11 @@ listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
     transcribing: "Transcribing locally…",
     completed: "Dictation complete.",
     cancelled: "Dictation cancelled.",
-    "permission-denied": "Microphone permission denied. Open Privacy & Security.",
+    "permission-denied": `Microphone permission denied. Open ${permissionSettingsName(currentAppInfo)}.`,
     "device-unavailable": "The selected microphone is unavailable.",
     "timed-out": "The microphone did not open in time.",
     "live-typing": "Typing…",
-    "clipboard-fallback": "Copied. Press Command+V to paste.",
+    "clipboard-fallback": `Copied. Press ${currentAppInfo.paste_shortcut} to paste.`,
     "cancelled-by-user": "Dictation cancelled.",
   };
   detail.textContent = messages[e.payload.state];
@@ -471,16 +503,10 @@ async function initPrefs() {
 // arrives — after any KVM has translated it. e.code is used rather than e.key
 // because a KVM can rewrite the produced character while the physical key code
 // survives.
-const MOD_GLYPH: Record<string, string> = {
-  Control: "\u2303", Alt: "\u2325", Shift: "\u21e7", Command: "\u2318",
-};
 const MODIFIER_ORDER = ["Control", "Alt", "Shift", "Command"];
 
 function pretty(accel: string): string {
-  return accel
-    .split("+")
-    .map((p) => MOD_GLYPH[p] ?? p.replace(/^Key/, "").replace(/^Digit/, ""))
-    .join("");
+  return formatShortcut(accel, currentAppInfo.platform);
 }
 
 function accelFrom(e: KeyboardEvent, observedModifiers: ReadonlySet<string>): string | null {
@@ -609,9 +635,14 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
   });
 });
 
+async function bootstrap(): Promise<void> {
+  await refreshSetup();
+  await refreshHotkeys();
+}
+
 initPrefs();
 refresh();
-void refreshSetup();
+void bootstrap();
 setInterval(() => {
   if (document.visibilityState === "visible") {
     void refresh();

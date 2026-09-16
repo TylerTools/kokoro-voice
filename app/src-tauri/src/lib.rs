@@ -664,6 +664,17 @@ fn dictation_status(app: AppHandle) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::json!({ "state": "idle" }))
 }
 
+fn app_info() -> serde_json::Value {
+    let platform = std::env::consts::OS;
+    serde_json::json!({
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "build_revision": option_env!("HEREWORD_BUILD_REVISION").unwrap_or("development"),
+        "platform": platform,
+        "architecture": std::env::consts::ARCH,
+        "paste_shortcut": if platform == "windows" { "Ctrl+V" } else { "Command+V" },
+    })
+}
+
 #[tauri::command]
 fn export_diagnostics(app: AppHandle) -> Result<String, String> {
     use sha2::Digest;
@@ -679,7 +690,9 @@ fn export_diagnostics(app: AppHandle) -> Result<String, String> {
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or(serde_json::Value::Null);
     let document = serde_json::json!({
+        "app": app_info(),
         "app_version": env!("CARGO_PKG_VERSION"),
+        "build_revision": option_env!("HEREWORD_BUILD_REVISION").unwrap_or("development"),
         "platform": std::env::consts::OS,
         "architecture": std::env::consts::ARCH,
         "installed": is_installed(),
@@ -888,6 +901,7 @@ fn system_check(app: AppHandle) -> serde_json::Value {
     let _ = &app;
 
     serde_json::json!({
+        "app": app_info(),
         "engine": engine_status(),
         "permissions": permission_status(),
         "hotkeys": hotkeys(),
@@ -2242,7 +2256,15 @@ fn dictation_start(app: &AppHandle) {
                             }),
                         );
                         set_dictation_status(&app2, &id, DictationStatus::ClipboardFallback);
-                        show_player_notice(&app2, "Copied. Press Command+V to paste.");
+                        let paste_shortcut = if cfg!(target_os = "windows") {
+                            "Ctrl+V"
+                        } else {
+                            "Command+V"
+                        };
+                        show_player_notice(
+                            &app2,
+                            &format!("Copied. Press {paste_shortcut} to paste."),
+                        );
                     }
                 }
             }

@@ -15,6 +15,8 @@ Current implementation status:
 - `client/snip.py` uses Windows.Media.Ocr through PowerShell.
 - Windows dictation is clipboard-only until a target-owned UI Automation range
   adapter passes the same safety tests as macOS.
+- The settings/player markup and styles are shared with macOS. A small platform
+  policy supplies native shortcut labels, setup wording, and permission rows.
 - CI compiles and tests Windows, but CI is not physical hotkey, audio, OCR, or
   installer evidence. Do not describe Windows as released from CI alone.
 
@@ -24,7 +26,7 @@ Current implementation status:
 physical shortcut
     -> Tauri Windows shortcut adapter
     -> Read / Dictate / Snip orchestration
-    -> local authenticated engine at 127.0.0.1:8123
+    -> local authenticated engine at 127.0.0.1:8125
 ```
 
 The desktop app is the only engine owner. Do not add Task Scheduler, a Windows
@@ -41,6 +43,7 @@ service, AutoHotkey, or another tray process beside it.
 | STT selection | `stt_config.py`, `server.py` | CUDA/CPU candidates and CPU compute benchmark |
 | OCR flow | `client/snip.py` | Windows.Media.Ocr and screen-clip capture |
 | Safe text insertion | `text_backend.rs` contract | UI Automation adapter remains intentionally unavailable |
+| Settings and player | shared `index.html`, CSS, and TypeScript | `platform_ui.ts` supplies native copy and shortcut display |
 
 Keep OS-specific code behind these adapters. Do not add `platform.system()` or
 `cfg!(windows)` branches to the settings UI to compensate for a backend gap.
@@ -77,6 +80,10 @@ important than never editing the wrong control.
 
 ## Physical release gate
 
+- [ ] The paired macOS and Windows manifests have the same version, tag, and
+      full Git revision, and both artifacts remain in one draft release.
+- [ ] The Windows installer and installed executable have valid Authenticode
+      signatures from the approved publisher.
 - [ ] CPU-only and NVIDIA setup complete from a clean Windows x64 machine.
 - [ ] CPU benchmark result and selected compute type are recorded.
 - [ ] Offline relaunch works after setup and reboot/autostart.

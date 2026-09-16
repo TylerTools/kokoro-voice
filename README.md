@@ -60,15 +60,17 @@ For macOS on Apple silicon, download
 [HereWord from GitHub Releases](https://github.com/Tyler-Tools/kokoro-voice-2/releases).
 The desktop app installs its private runtime and verified models on first
 launch; no system Python is required. Published macOS builds are signed with a
-persistent Developer ID and notarized by Apple. A verified Windows 2.1
-installer is not included in this release.
+persistent Developer ID and notarized by Apple. Windows is built from the same
+source and UI contract, but its installer remains a draft until Authenticode
+signing and the physical Windows acceptance checklist pass.
 
 ```powershell
-.\install.ps1         # Windows
+.\install.ps1 -ReleaseRepository OWNER/HEREWORD-BINARIES
 ```
 
-`install.ps1` is a signed-release bootstrap for Windows. It refuses installers
-whose Authenticode signature is not valid.
+`install.ps1` is a signed-release bootstrap for Windows. Distribution is off by
+default; it requires the approved public binary-only release repository and
+refuses installers whose Authenticode signature is not valid.
 
 `install.sh` is a legacy/manual service-only installer. Do not run it on a Mac
 that uses HereWord.app: it creates a second engine owner and port conflict.
@@ -229,7 +231,7 @@ playing must reach the producer too.
 | | Status |
 |---|---|
 | **macOS** (Apple silicon) | Complete — service, hotkeys, mini player, dictation, snip OCR |
-| **Windows x64** | Desktop host, registered hotkeys, CPU/NVIDIA STT fallback, dictation, and Windows.Media.Ocr implementation; release requires the Windows CI and physical checklist to pass |
+| **Windows x64** | Shared HereWord UI plus native shortcut labels, registered hotkeys, CPU/NVIDIA STT fallback, clipboard dictation, and Windows.Media.Ocr; publication remains blocked on signing credentials and physical acceptance |
 | **Linux** | Clients work; no host integration |
 
 The service and both clients are portable. What is platform-specific is the

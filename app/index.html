@@ -24,14 +24,13 @@
     <section id="setup" class="card setup" hidden>
       <h3>Finish setup</h3>
       <p id="setup-intro">
-        Download the local models, then allow the required macOS access. HereWord
-        opens each setting and checks it automatically.
+        Download the local models to finish setting up HereWord on this computer.
       </p>
       <ol class="setup-steps">
         <li><span>Local speech models</span><strong id="setup-state-engine">Checking…</strong></li>
-        <li><span>Microphone</span><strong id="setup-state-microphone">Checking…</strong></li>
-        <li><span>Accessibility</span><strong id="setup-state-accessibility">Checking…</strong></li>
-        <li><span>Global shortcuts</span><strong id="setup-state-input">Checking…</strong></li>
+        <li id="setup-row-microphone"><span>Microphone</span><strong id="setup-state-microphone">Checking…</strong></li>
+        <li id="setup-row-accessibility"><span>Accessibility</span><strong id="setup-state-accessibility">Checking…</strong></li>
+        <li id="setup-row-input"><span>Global shortcuts</span><strong id="setup-state-input">Checking…</strong></li>
       </ol>
       <div class="bar" hidden id="bar-wrap"><div class="bar-fill" id="bar"></div></div>
       <p class="setup-msg" id="setup-msg" aria-live="polite"></p>
@@ -43,17 +42,17 @@
       <h2>Shortcuts</h2>
       <div class="shortcut-row">
         <span><strong>Read</strong><small>Selected text</small></span>
-        <kbd id="key-read">⌃⌘</kbd>
+        <kbd id="key-read">Loading…</kbd>
         <button class="rec" data-rec="read">Change</button>
       </div>
       <div class="shortcut-row">
         <span><strong>Dictate</strong><small>Hold while speaking</small></span>
-        <kbd id="key-dictate">⇧⌘</kbd>
+        <kbd id="key-dictate">Loading…</kbd>
         <button class="rec" data-rec="dictate">Change</button>
       </div>
       <div class="shortcut-row">
         <span><strong>Snip</strong><small>Read text from the screen</small></span>
-        <kbd id="key-snip">F7</kbd>
+        <kbd id="key-snip">Loading…</kbd>
         <button class="rec" data-rec="snip">Change</button>
       </div>
     </section>
@@ -110,7 +109,7 @@
       </div>
     </details>
 
-    <p class="version">HereWord 2.1</p>
+    <p class="version" id="app-version">HereWord</p>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

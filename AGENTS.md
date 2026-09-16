@@ -201,7 +201,7 @@ expected. A stable signing identity removes this development-only churn.
 - Do not mark a shortcut working from unit tests alone. Verify the installed
   bundle and runtime events.
 - Do not run `install.sh` on a machine using the desktop app. Two engine owners
-  will contend for port 8123 and produce misleading health/lifecycle failures.
+  will contend for port 8125 and produce misleading health/lifecycle failures.
 - Local bundle replacement is recoverable. Public signing, notarization,
   publishing, or release upload requires separate authority.
 
@@ -212,6 +212,9 @@ Run from the repository root unless noted:
 ```sh
 uv run --python .venv/bin/python python -m unittest discover -s tests -v
 cd app && npm run build
+cd app && npm test
+cd app && npm run test:visual
+python3 scripts/release/verify_version_sync.py
 cargo fmt --check --manifest-path app/src-tauri/Cargo.toml
 cargo test --manifest-path app/src-tauri/Cargo.toml
 cargo clippy --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings
