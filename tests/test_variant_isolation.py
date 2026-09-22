@@ -83,6 +83,40 @@ class VariantIsolationTests(unittest.TestCase):
         self.assertIn('show_settings(tray.app_handle());', lib)
         self.assertIn('"open" => show_settings(app)', lib)
 
+    def test_read_asks_accessibility_before_touching_the_clipboard(self):
+        """Reading the selection must not be the clipboard's job by default.
+
+        Copying overwrites whatever the user had on the clipboard, and the
+        synthetic Ctrl+C it relies on is corrupted by the modifiers a
+        modifier-only Read shortcut is still holding. The accessibility route
+        has neither problem, so it has to be tried first -- but the copy has to
+        survive as a fallback, because many controls expose no text pattern.
+        """
+        lib = (ROOT / "app/src-tauri/src/lib.rs").read_text(encoding="utf-8")
+        body = lib.split("fn read_selection(app: AppHandle) {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        accessibility = body.index("selection::focused_selection()")
+        clipboard = body.index('"--selection"')
+        self.assertLess(accessibility, clipboard)
+        self.assertIn('args.insert(0, "--stdin".to_string());', body)
+        self.assertIn("run_client_monitored_input(&app, \"speak.py\", args, Some(text));", body)
+
+    def test_selected_text_is_never_read_out_of_a_password_field(self):
+        source = (ROOT / "app/src-tauri/src/selection.rs").read_text(encoding="utf-8")
+        self.assertIn("CurrentIsPassword()", source)
+        # The password check must precede any attempt to pull text out.
+        self.assertLess(
+            source.index("CurrentIsPassword()"), source.index("GetSelection()")
+        )
+
+    def test_piped_text_closes_the_pipe_so_the_client_can_start(self):
+        """A client reading stdin to EOF hangs forever if the pipe stays open."""
+        lib = (ROOT / "app/src-tauri/src/lib.rs").read_text(encoding="utf-8")
+        self.assertIn("fn run_client_monitored_input(", lib)
+        self.assertIn("child.stdin.take()", lib)
+        self.assertIn("wait_with_output()", lib)
+
     def test_settings_restores_the_existing_window(self):
         lib = (ROOT / "app/src-tauri/src/lib.rs").read_text(encoding="utf-8")
         helper = lib.split('fn show_settings(app: &AppHandle) {', 1)[1].split(
