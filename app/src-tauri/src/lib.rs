@@ -12,6 +12,7 @@
 mod chords;
 mod dictation_protocol;
 mod hotkeys;
+mod selection;
 mod text_backend;
 mod variant;
 #[cfg(target_os = "windows")]
@@ -1494,6 +1495,18 @@ fn hide_player(app: &AppHandle) {
 /// runs. Fire-and-forget left the user with no way to stop audio: the mini
 /// player was a host feature that did not survive the move off Hammerspoon.
 fn run_client_monitored(app: &AppHandle, script: &str, args: Vec<String>) {
+    run_client_monitored_input(app, script, args, None);
+}
+
+/// As above, but hands the client its text on stdin instead of making it go
+/// find it. Reading the selection ourselves is the only way to keep the user's
+/// clipboard intact, so the text has to travel somehow.
+fn run_client_monitored_input(
+    app: &AppHandle,
+    script: &str,
+    args: Vec<String>,
+    input: Option<String>,
+) {
     let Some(paths) = Paths::current() else {
         let _ = app.emit("engine-missing", ());
         return;
@@ -1504,11 +1517,28 @@ fn run_client_monitored(app: &AppHandle, script: &str, args: Vec<String>) {
     let script = script.to_string();
     let app2 = app.clone();
     std::thread::spawn(move || {
-        let output = client_command(&paths, &script).args(&args).output();
-        let notice = match output {
-            Ok(result) => String::from_utf8_lossy(&result.stdout)
-                .lines()
-                .find_map(|line| line.strip_prefix("NOTICE ").map(str::to_owned)),
+        let mut command = client_command(&paths, &script);
+        command.args(&args).stdout(Stdio::piped());
+        if input.is_some() {
+            command.stdin(Stdio::piped());
+        }
+        let notice = match command.spawn() {
+            Ok(mut child) => {
+                if let Some(text) = input {
+                    if let Some(mut pipe) = child.stdin.take() {
+                        use std::io::Write;
+                        let _ = pipe.write_all(text.as_bytes());
+                    }
+                    // Dropped here on purpose: the client reads to EOF, so a
+                    // pipe left open would hang it before a word is spoken.
+                }
+                match child.wait_with_output() {
+                    Ok(result) => String::from_utf8_lossy(&result.stdout)
+                        .lines()
+                        .find_map(|line| line.strip_prefix("NOTICE ").map(str::to_owned)),
+                    Err(error) => Some(format!("Could not start Kokoro: {error}")),
+                }
+            }
             Err(error) => Some(format!("Could not start Kokoro: {error}")),
         };
         if let Some(message) = notice {
@@ -1527,8 +1557,17 @@ fn read_selection(app: AppHandle) {
     if is_dictating(&app) {
         return;
     }
-    let mut args = vec!["--selection".to_string()];
-    args.extend(voice_args());
+    let mut args = voice_args();
+    // Ask the accessibility layer what is selected before resorting to a
+    // synthetic copy. The copy overwrites the user's clipboard, and on Windows
+    // it also has to survive the shortcut's own modifiers still being held.
+    // Controls that expose no text pattern still fall through to the copy.
+    if let Some(text) = selection::focused_selection() {
+        args.insert(0, "--stdin".to_string());
+        run_client_monitored_input(&app, "speak.py", args, Some(text));
+        return;
+    }
+    args.insert(0, "--selection".to_string());
     run_client_monitored(&app, "speak.py", args);
 }
 
