@@ -51,6 +51,8 @@ and performs no outbound network requests after setup.
 | `app/src-tauri/src/dictation_protocol.rs` | Typed parser for the Python dictation child's stdout contract. |
 | `app/src-tauri/src/hotkeys.rs` | Shortcut domain model, defaults, display contract, and recorder classification. |
 | `app/src-tauri/src/chords.rs` | macOS Quartz adapter for modifier-only Read/Dictate gestures and synthetic text events. |
+| `app/src-tauri/src/windows_chords.rs` | Windows adapter for modifier-only gestures; complete accelerators remain in Tauri. |
+| `app/src-tauri/src/selection.rs` | Windows UI Automation selection capture and secure-field rejection. |
 | `app/src-tauri/src/read_action.rs` | Clipboard-free Read decision policy: speak, toggle, or explain rejection. |
 | `app/src-tauri/src/runtime.rs` | Authenticated engine lifecycle, app-owned model cache, paths, watchdog, and structured logs. |
 | `app/src-tauri/src/runtime_hygiene.rs` | Exact-name, age-gated cleanup for app-managed temporary runtime files. |
@@ -130,9 +132,11 @@ macOS uses one Quartz input controller:
 - Quartz owns every configurable modifier-only gesture and complete
   accelerator. Modifier-only gestures require at least two distinct modifiers;
   a Windows/Super key arriving through Deskflow is stored as Command.
-- Tauri global shortcuts are Windows-only. Deskflow-generated key events reach
-  Quartz but do not reliably trigger macOS's registered-hotkey callback; never
-  route macOS actions back through that split path.
+- Tauri global shortcuts are Windows-only. Windows modifier-only gestures use
+  `windows_chords.rs`, while complete accelerators stay in Tauri.
+  Deskflow-generated key events reach Quartz but do not reliably trigger
+  macOS's registered-hotkey callback; never route macOS actions back through
+  that split path.
 
 Any modifier-only Dictate chord can be a prefix of a complete shortcut using
 the same modifiers. The Quartz controller must leave a short grace period

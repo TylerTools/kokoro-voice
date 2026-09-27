@@ -56,6 +56,7 @@ Quartz owns both forms on macOS; Tauri global shortcuts remain Windows-only.
 | --- | --- | --- |
 | macOS Quartz | Every recorded two-or-more-modifier gesture; every recorded complete accelerator; Escape cancellation; injected text events | Windows shortcuts |
 | Windows global shortcuts | Recorded Read, Dictate, and Snip accelerators | macOS and modifier-only gestures |
+| Windows gesture adapter | Recorded modifier-only Read, Dictate, and Snip gestures | Complete accelerators and macOS input |
 
 ### Prefix arbitration
 
@@ -111,8 +112,11 @@ accepted registration. Only `hotkey-triggered` proves the end-to-end input path.
    expose no focused accessibility element use a user-triggered Copy fallback:
    HereWord snapshots every pasteboard item and type, clears stale content,
    captures the fresh selection, and restores the complete original pasteboard
-   before synthesis. A fresh selection is streamed to `client/speak.py` over
-   stdin; no selection pauses or resumes active playback.
+   before synthesis. On Windows, UI Automation reads the focused selection
+   directly; unsupported controls fall back to a modifier-release-aware Copy,
+   while password fields fail closed and never use the clipboard. A fresh
+   selection is streamed to `client/speak.py` over stdin; no selection pauses
+   or resumes active playback.
 4. The client chunks text, pipelines authenticated `/speak` requests, and plays
    audio while preparing the next chunk.
 5. The floating player controls pause/resume/stop without stealing focus.

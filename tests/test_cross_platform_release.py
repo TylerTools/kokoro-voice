@@ -32,6 +32,13 @@ class CrossPlatformReleaseContractTests(unittest.TestCase):
         self.assertIn("Get-AuthenticodeSignature", signer)
         self.assertIn("WINDOWS_EXPECTED_PUBLISHER", signer)
 
+    def test_ci_packages_only_an_explicit_unsigned_windows_development_artifact(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("Build unsigned Windows development installer", workflow)
+        self.assertIn("build_kind = 'unsigned-development'", workflow)
+        self.assertIn("hereword-windows-unsigned-${{ github.sha }}", workflow)
+        self.assertIn("source_tree = (git rev-parse 'HEAD^{tree}')", workflow)
+
     def test_bootstrap_never_embeds_private_repository_credentials(self):
         bootstrap = (ROOT / "install.ps1").read_text()
         self.assertIn("HEREWORD_RELEASE_REPOSITORY", bootstrap)
@@ -42,4 +49,3 @@ class CrossPlatformReleaseContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

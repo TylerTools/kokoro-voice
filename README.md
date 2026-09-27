@@ -56,13 +56,15 @@ Developer and agent documentation:
 
 ## Install
 
-For macOS on Apple silicon, download
-[HereWord from GitHub Releases](https://github.com/Tyler-Tools/kokoro-voice-2/releases).
-The desktop app installs its private runtime and verified models on first
-launch; no system Python is required. Published macOS builds are signed with a
-persistent Developer ID and notarized by Apple. Windows is built from the same
-source and UI contract, but its installer remains a draft until Authenticode
-signing and the physical Windows acceptance checklist pass.
+Signed HereWord packages will appear in
+[GitHub Releases](https://github.com/TylerTools/kokoro-voice/releases) after
+their platform acceptance gates pass. The existing Kokoro-branded releases are
+legacy builds; this repository contains the current HereWord source. The desktop
+app installs its private runtime and verified models on first launch; no system
+Python is required. Release macOS builds require a persistent Developer ID and
+Apple notarization. Windows is built from the same source and UI contract, but
+its installer remains a draft until Authenticode signing and the physical
+Windows acceptance checklist pass.
 
 ```powershell
 .\install.ps1 -ReleaseRepository OWNER/HEREWORD-BINARIES

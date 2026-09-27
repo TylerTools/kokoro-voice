@@ -4,7 +4,8 @@
 //!
 //! macOS routes modifier-only gestures and complete accelerators through one
 //! Quartz controller because Deskflow events do not reliably trigger the
-//! registered-hotkey API. Windows uses Tauri's global-shortcut plugin.
+//! registered-hotkey API. Windows uses Tauri's global-shortcut plugin for
+//! complete accelerators and a low-level adapter for modifier-only gestures.
 //!
 //! Those platform controllers are implementation details. This module is the
 //! source of truth for slots, defaults, display data, and recorder validation
@@ -14,22 +15,32 @@ use serde::Serialize;
 
 // Stable is distinct from the legacy app. Candidate adds Shift so its event tap
 // can run beside Stable without one physical press dispatching both builds.
+#[cfg(not(target_os = "windows"))]
 const CANDIDATE_BUILD: bool = option_env!("KOKORO_BUILD_CHANNEL").is_some();
+#[cfg(not(target_os = "windows"))]
 pub const DEFAULT_READ: &str = if CANDIDATE_BUILD {
     "Control+Alt+Command+Shift+KeyU"
 } else {
     "Control+Alt+Command+KeyU"
 };
+#[cfg(not(target_os = "windows"))]
 pub const DEFAULT_DICTATE: &str = if CANDIDATE_BUILD {
     "Control+Alt+Command+Shift+KeyI"
 } else {
     "Control+Alt+Command+KeyI"
 };
+#[cfg(not(target_os = "windows"))]
 pub const DEFAULT_SNIP: &str = if CANDIDATE_BUILD {
     "Control+Alt+Command+Shift+KeyP"
 } else {
     "Control+Alt+Command+KeyP"
 };
+#[cfg(target_os = "windows")]
+pub const DEFAULT_READ: &str = "Control+Alt+Shift+KeyU";
+#[cfg(target_os = "windows")]
+pub const DEFAULT_DICTATE: &str = "Control+Alt+Shift+KeyI";
+#[cfg(target_os = "windows")]
+pub const DEFAULT_SNIP: &str = "Control+Alt+Shift+KeyP";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -110,11 +121,15 @@ pub struct Capture {
 /// Classify a recorder result before the runtime touches preferences.
 ///
 /// Complete accelerators are validated by the platform shortcut parser in
-/// `lib.rs`. macOS modifier gestures use the Quartz adapter and require at least
+/// `lib.rs`. Modifier gestures use the platform input adapter and require at least
 /// two distinct modifiers so an ordinary Control, Shift, Alt, or Command press
 /// can never trigger an action by itself.
-pub fn classify_capture(slot: Slot, accelerator: &str, macos: bool) -> Result<Capture, String> {
-    if macos && modifier_only(accelerator) {
+pub fn classify_capture(
+    slot: Slot,
+    accelerator: &str,
+    supports_modifier_gestures: bool,
+) -> Result<Capture, String> {
+    if supports_modifier_gestures && modifier_only(accelerator) {
         let modifiers: Vec<_> = accelerator.split('+').collect();
         if modifiers.len() < 2 {
             return Err("Use at least two modifier keys for a modifier-only shortcut.".into());
@@ -144,11 +159,16 @@ pub fn response(
     macos: bool,
 ) -> serde_json::Value {
     let config = Config::from_preferences(preferences);
-    let _ = macos;
     let read = config.read.clone();
     let dictate = config.dictate.clone();
     let snip = config.snip.clone();
     serde_json::json!({
+        "modifier_labels": if macos {
+            serde_json::json!({"Control":"⌃", "Alt":"⌥", "Shift":"⇧", "Command":"⌘"})
+        } else {
+            serde_json::json!({"Control":"Ctrl", "Alt":"Alt", "Shift":"Shift", "Command":"Win"})
+        },
+        "separator": if macos { "" } else { "+" },
         "read": read,
         "dictate": dictate,
         "snip": snip,
@@ -160,7 +180,7 @@ pub fn response(
     })
 }
 
-fn modifier_only(accelerator: &str) -> bool {
+pub(crate) fn modifier_only(accelerator: &str) -> bool {
     !accelerator.is_empty()
         && accelerator
             .split('+')
@@ -170,6 +190,14 @@ fn modifier_only(accelerator: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_shortcuts_display_named_keys() {
+        let value = response(&serde_json::json!({}), true, false);
+        assert_eq!(value["modifier_labels"]["Control"], "Ctrl");
+        assert_eq!(value["modifier_labels"]["Command"], "Win");
+        assert_eq!(value["separator"], "+");
+    }
 
     #[test]
     fn defaults_and_saved_values_have_one_source_of_truth() {
@@ -213,5 +241,23 @@ mod tests {
         let capture = classify_capture(Slot::Snip, "Shift+Command+KeyZ", true).unwrap();
         assert_eq!(capture.kind, CaptureKind::RegisteredShortcut);
         assert_eq!(capture.accelerator, "Shift+Command+KeyZ");
+    }
+
+    #[test]
+    fn windows_accepts_modifier_chords_but_rejects_single_or_duplicate_modifiers() {
+        assert_eq!(
+            classify_capture(Slot::Read, "Control+Alt", true)
+                .unwrap()
+                .kind,
+            CaptureKind::ModifierGesture
+        );
+        assert_eq!(
+            classify_capture(Slot::Dictate, "Control+Shift", true)
+                .unwrap()
+                .kind,
+            CaptureKind::ModifierGesture
+        );
+        assert!(classify_capture(Slot::Read, "Control", true).is_err());
+        assert!(classify_capture(Slot::Read, "Control+Control", true).is_err());
     }
 }

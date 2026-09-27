@@ -255,6 +255,21 @@ class VariantIsolationTests(unittest.TestCase):
         ):
             self.assertIn(shortcut, hotkeys)
 
+    def test_windows_selection_and_modifier_gestures_keep_secure_boundaries(self):
+        lib = (ROOT / "app/src-tauri/src/lib.rs").read_text()
+        selection = (ROOT / "app/src-tauri/src/selection.rs").read_text()
+        gestures = (ROOT / "app/src-tauri/src/windows_chords.rs").read_text()
+
+        self.assertIn("mod selection;", lib)
+        self.assertIn("mod windows_chords;", lib)
+        self.assertIn("selection::Selection::Selected(text)", lib)
+        self.assertIn("selection::Selection::Secure", lib)
+        self.assertIn("selection::Selection::Unavailable", lib)
+        self.assertIn("CurrentIsPassword", selection)
+        self.assertIn("return Selection::Secure", selection)
+        self.assertIn("SetWindowsHookExW", gestures)
+        self.assertIn("A longer shortcut must cancel a modifier gesture", gestures)
+
 
 if __name__ == "__main__":
     unittest.main()

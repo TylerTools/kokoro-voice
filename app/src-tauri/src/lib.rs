@@ -20,8 +20,12 @@ mod preferences;
 mod read_action;
 mod runtime;
 mod runtime_hygiene;
+#[cfg(target_os = "windows")]
+mod selection;
 mod text_backend;
 mod variant;
+#[cfg(target_os = "windows")]
+mod windows_chords;
 
 use std::io::Write;
 use std::process::{ChildStdin, Command, Stdio};
@@ -1577,7 +1581,39 @@ fn read_selection(app: AppHandle) {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        match selection::focused_selection() {
+            selection::Selection::Selected(text) => {
+                structured_log(
+                    "read-selection-acquired",
+                    serde_json::json!({ "characters": text.chars().count() }),
+                );
+                let mut args = vec!["--stdin".to_string()];
+                args.extend(voice_args());
+                run_client_monitored(&app, "speak.py", args, Some(text));
+            }
+            selection::Selection::Secure => {
+                structured_log(
+                    "read-rejected",
+                    serde_json::json!({ "code": "secure-field" }),
+                );
+                show_player_notice(&app, "Protected text can't be read aloud.");
+                let app2 = app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    hide_player(&app2);
+                });
+            }
+            selection::Selection::Unavailable => {
+                let mut args = vec!["--selection".to_string()];
+                args.extend(voice_args());
+                run_client_monitored(&app, "speak.py", args, None);
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let mut args = vec!["--selection".to_string()];
         args.extend(voice_args());
@@ -2416,7 +2452,7 @@ fn dictation_stop(app: &AppHandle) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn dictation_cancel(app: &AppHandle) {
     let active = app.try_state::<Dictation>().and_then(|d| {
         d.0.lock().ok().and_then(|mut session| {
@@ -2465,6 +2501,8 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     if !variant::INPUT_CONTROLLER_ENABLED {
         return Err("global input is disabled in the passive Candidate build".into());
     }
+    #[cfg(target_os = "windows")]
+    windows_chords::suspend(true);
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
     let config = hotkeys::Config::from_preferences(&load_prefs());
@@ -2527,8 +2565,34 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let parse = |a: &str, what: &str| -> Result<Shortcut, String> {
+        windows_chords::configure(&config)?;
+        let gesture_app = app.clone();
+        windows_chords::start(move |action| {
+            use windows_chords::Action;
+            match action {
+                Action::Read => {
+                    hotkey_triggered(&gesture_app, hotkeys::Slot::Read);
+                    read_selection(gesture_app.clone());
+                }
+                Action::Snip => {
+                    hotkey_triggered(&gesture_app, hotkeys::Slot::Snip);
+                    snip_and_read(gesture_app.clone());
+                }
+                Action::DictateStart => {
+                    hotkey_triggered(&gesture_app, hotkeys::Slot::Dictate);
+                    dictation_start(&gesture_app);
+                }
+                Action::DictateStop => dictation_stop(&gesture_app),
+                Action::DictateCancel => dictation_cancel(&gesture_app),
+            }
+        })?;
+
+        let parse = |a: &str, what: &str| -> Result<Option<Shortcut>, String> {
+            if hotkeys::modifier_only(a) {
+                return Ok(None);
+            }
             a.parse::<Shortcut>()
+                .map(Some)
                 .map_err(|_| format!("{what} shortcut is not valid: {a}"))
         };
         let read = parse(&config.read, "read")?;
@@ -2536,30 +2600,41 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
         let snip = parse(&config.snip, "snip")?;
 
         let result = gs
-            .on_shortcuts([read, dictate, snip], move |app, sc, event| {
-                match event.state {
+            .on_shortcuts(
+                [read, dictate, snip].into_iter().flatten(),
+                move |app, sc, event| match event.state {
                     ShortcutState::Pressed => {
-                        if sc == &read {
+                        if Some(sc) == read.as_ref() {
                             hotkey_triggered(app, hotkeys::Slot::Read);
                             read_selection(app.clone());
-                        } else if sc == &snip {
+                        } else if Some(sc) == snip.as_ref() {
                             hotkey_triggered(app, hotkeys::Slot::Snip);
                             snip_and_read(app.clone());
-                        } else if sc == &dictate {
+                        } else if Some(sc) == dictate.as_ref() {
                             hotkey_triggered(app, hotkeys::Slot::Dictate);
-                            dictation_start(app); // push to talk
+                            dictation_start(app);
                         }
                     }
                     ShortcutState::Released => {
-                        if sc == &dictate {
+                        if Some(sc) == dictate.as_ref() {
                             dictation_stop(app);
                         }
                     }
-                }
-            })
+                },
+            )
             .map_err(|e| format!("could not register hotkeys: {e}"));
         if result.is_ok() {
+            windows_chords::suspend(false);
             HOTKEYS_REGISTERED.store(true, Ordering::SeqCst);
+            structured_log(
+                "hotkeys-registered",
+                serde_json::json!({
+                    "profile": "windows-global-shortcuts",
+                    "read": config.read,
+                    "dictate": config.dictate,
+                    "snip": config.snip,
+                }),
+            );
         }
         result
     }
@@ -2631,6 +2706,8 @@ fn start_permission_readiness_watcher(_app: AppHandle) {
 #[tauri::command]
 fn begin_hotkey_recording(app: AppHandle) -> Result<(), String> {
     HOTKEYS_REGISTERED.store(false, Ordering::SeqCst);
+    #[cfg(target_os = "windows")]
+    windows_chords::suspend(true);
     app.global_shortcut()
         .unregister_all()
         .map_err(|e| format!("could not pause hotkeys for recording: {e}"))?;
@@ -2659,7 +2736,11 @@ fn set_hotkey(
     accelerator: String,
 ) -> Result<hotkeys::Capture, String> {
     let slot = hotkeys::Slot::parse(&slot)?;
-    let capture = hotkeys::classify_capture(slot, &accelerator, cfg!(target_os = "macos"))?;
+    let capture = hotkeys::classify_capture(
+        slot,
+        &accelerator,
+        cfg!(any(target_os = "macos", target_os = "windows")),
+    )?;
     if capture.kind == hotkeys::CaptureKind::RegisteredShortcut {
         accelerator
             .parse::<Shortcut>()
@@ -3151,7 +3232,7 @@ pub fn run() {
             )?;
             let menu = Menu::with_items(app, &[&read, &snip, &stop, &open, &quit])?;
 
-            TrayIconBuilder::new()
+            let tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(true)
@@ -3172,8 +3253,27 @@ pub fn run() {
                         app.exit(0);
                     }
                     _ => {}
-                })
-                .build(app)?;
+                });
+
+            #[cfg(target_os = "windows")]
+            let tray = tray
+                .tooltip(format!("{} — Settings", variant::DISPLAY_NAME))
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        }
+                    ) {
+                        show_settings(tray.app_handle());
+                    }
+                });
+
+            tray.build(app)?;
 
             Ok(())
         })

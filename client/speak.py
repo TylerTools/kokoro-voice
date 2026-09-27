@@ -192,6 +192,35 @@ def get_clipboard() -> str:
                           capture_output=True, text=True).stdout
 
 
+# Every modifier a configurable shortcut can hold down: Ctrl, Alt, Shift, and
+# both Windows keys. A Windows/Super key arriving through Deskflow is stored as
+# Command, so a read gesture really can be holding LWIN when the action fires.
+_MODIFIER_VKS = (0x11, 0x12, 0x10, 0x5B, 0x5C)
+
+
+def modifiers_held() -> bool:
+    """True while any modifier key is physically down. Windows only."""
+    if not IS_WIN:
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        return any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in _MODIFIER_VKS)
+    except Exception:  # noqa: BLE001 - a probe failure must not block reading
+        return False
+
+
+def wait_for_modifier_release(timeout: float = 1.5) -> bool:
+    """Let the shortcut's own keys come up before a fallback Ctrl+C."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not modifiers_held():
+            return True
+        time.sleep(0.02)
+    return not modifiers_held()
+
+
 def copy_selection() -> str:
     previous = get_clipboard()
     if IS_MAC:
@@ -201,6 +230,7 @@ def copy_selection() -> str:
             capture_output=True,
         )
     elif IS_WIN:
+        wait_for_modifier_release()
         subprocess.run(
             ["powershell", "-NoProfile", "-Command",
              "Add-Type -AssemblyName System.Windows.Forms;"
