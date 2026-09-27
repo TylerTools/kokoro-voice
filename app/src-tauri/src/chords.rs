@@ -17,7 +17,7 @@ use core_graphics::event::{
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
-/// Marks Kokoro's synthetic text-edit events so the modifier gesture tap does
+/// Marks HereWord's synthetic text-edit events so the modifier gesture tap does
 /// not mistake live transcript insertion for a contaminated physical chord.
 const INJECTED_EVENT_MARKER: i64 = 0x4b4f_4b4f_524f;
 static SUSPENDED_FOR_RECORDER: AtomicBool = AtomicBool::new(false);
@@ -486,6 +486,25 @@ fn modifier_mask_from_names(modifiers: &[&str]) -> u8 {
     })
 }
 
+fn append_bounded_log(
+    path: &std::path::Path,
+    line: &str,
+    maximum_bytes: u64,
+) -> std::io::Result<()> {
+    if path.metadata().map(|value| value.len()).unwrap_or(0) >= maximum_bytes {
+        let previous = path.with_file_name("hotkey.previous.log");
+        if previous.exists() {
+            std::fs::remove_file(&previous)?;
+        }
+        std::fs::rename(path, previous)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")
+}
+
 fn log_event(line: &str) {
     let path = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -496,13 +515,7 @@ fn log_event(line: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(f, "{line}");
-    }
+    let _ = append_bounded_log(&path, line, 1_000_000);
 }
 
 pub fn watch<F1, F2, F3, F4, F5>(
@@ -673,15 +686,36 @@ fn post_key(
     down: bool,
     text: Option<&str>,
 ) -> Result<(), String> {
+    post_key_with_flags(source, keycode, down, text, CGEventFlags::empty())
+}
+
+fn post_key_with_flags(
+    source: CGEventSource,
+    keycode: u16,
+    down: bool,
+    text: Option<&str>,
+    flags: CGEventFlags,
+) -> Result<(), String> {
     let event = CGEvent::new_keyboard_event(source, keycode, down)
         .map_err(|_| "could not create keyboard event".to_string())?;
     event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, INJECTED_EVENT_MARKER);
-    event.set_flags(CGEventFlags::empty());
+    event.set_flags(flags);
     if let Some(text) = text {
         event.set_string(text);
     }
     event.post(CGEventTapLocation::HID);
     Ok(())
+}
+
+/// Ask the foreground application to copy its current selection. The caller
+/// owns pasteboard preservation; the injected marker keeps this helper from
+/// being mistaken for a configurable HereWord shortcut.
+pub fn copy_focused_selection() -> Result<(), String> {
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .map_err(|_| "could not create keyboard event source".to_string())?;
+    let flags = CGEventFlags::CGEventFlagCommand;
+    post_key_with_flags(source.clone(), 8, true, None, flags)?;
+    post_key_with_flags(source, 8, false, None, flags)
 }
 
 /// Replace the mutable suffix of text in the currently focused control.
@@ -705,6 +739,23 @@ pub fn replace_focused_text(delete_chars: usize, insert: &str) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotkey_log_keeps_one_bounded_previous_file() {
+        let directory =
+            std::env::temp_dir().join(format!("kokoro-hotkey-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("hotkey.log");
+        std::fs::write(&path, b"0123456789").unwrap();
+        append_bounded_log(&path, "next", 10).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(directory.join("hotkey.previous.log")).unwrap(),
+            "0123456789"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "next\n");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn read_fires_only_on_clean_release() {

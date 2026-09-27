@@ -2,7 +2,7 @@
 # LEGACY kokoro-voice service installer — Linux, or explicit manual macOS use.
 #
 # The supported desktop app owns its engine lifecycle. Running this installer
-# beside Kokoro Voice.app creates a second launchd engine owner on the same
+# beside HereWord.app creates a second launchd engine owner on the same
 # port. macOS therefore requires an explicit legacy override below.
 #
 # Idempotent: safe to re-run. Every step checks before it acts, so a partial
@@ -26,7 +26,7 @@ IS_MAC=false
 [[ "$(uname -s)" == "Darwin" ]] && IS_MAC=true
 
 if $IS_MAC && [[ "${KOKORO_ALLOW_LEGACY_INSTALL:-0}" != "1" ]]; then
-    die "legacy service install refused on macOS; use Kokoro Voice.app (set KOKORO_ALLOW_LEGACY_INSTALL=1 only for an intentional service-only setup)"
+    die "legacy service install refused on macOS; use HereWord.app (set KOKORO_ALLOW_LEGACY_INSTALL=1 only for an intentional service-only setup)"
 fi
 
 # ── 1. uv ────────────────────────────────────────────────────────────────────

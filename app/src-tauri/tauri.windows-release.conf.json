@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis"],
+    "windows": {
+      "signCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/release/sign-windows.ps1 \"%1\"",
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

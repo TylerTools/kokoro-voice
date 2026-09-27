@@ -1,6 +1,6 @@
 //! Target-locked accessibility insertion for live dictation.
 //!
-//! A preview may revise text already inserted by Kokoro, but it must never edit
+//! A preview may revise text already inserted by HereWord, but it must never edit
 //! a different control or overwrite user changes. `TargetSnapshot` records the
 //! original process/control, selection, and owned-text projection. Every write
 //! revalidates those invariants and permanently falls back to the clipboard
@@ -47,6 +47,8 @@ pub enum ApplyOutcome {
 }
 
 pub trait TextBackend {
+    #[cfg(target_os = "macos")]
+    fn selected_text() -> Result<Option<String>, ApplyOutcome>;
     fn capture_target() -> Result<TargetSnapshot, ApplyOutcome>;
     fn apply_revision(
         target: &mut TargetSnapshot,
@@ -57,7 +59,7 @@ pub trait TextBackend {
 
 pub struct PlatformTextBackend;
 
-#[cfg(test)]
+#[cfg(any(target_os = "macos", test))]
 fn char_slice(text: &str, start: usize, len: usize) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
     (start + len <= chars.len()).then(|| chars[start..start + len].iter().collect())
@@ -185,6 +187,21 @@ fn can_rebind_target(
     same_process && same_scope && value_matches && selection_matches
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn resolve_selected_text<F>(
+    direct: Result<Option<String>, ApplyOutcome>,
+    fallback: F,
+) -> Result<Option<String>, ApplyOutcome>
+where
+    F: FnOnce() -> Result<Option<String>, ApplyOutcome>,
+{
+    match direct {
+        Ok(Some(text)) if !text.trim().is_empty() => Ok(Some(text)),
+        Err(ApplyOutcome::SecureField) => Err(ApplyOutcome::SecureField),
+        Ok(_) | Err(_) => fallback(),
+    }
+}
+
 /// Chromium/WebKit content-editables sometimes expose an empty editor through
 /// Accessibility as `"\n<description>"` with the caret parked after the
 /// synthetic newline.  The description is placeholder text, not user text.
@@ -253,14 +270,129 @@ mod platform {
     use super::*;
     use accessibility::{AXAttribute, AXUIElement, AXUIElementAttributes};
     use accessibility_sys::{
-        kAXFocusedUIElementAttribute, kAXSelectedTextRangeAttribute, kAXValueTypeCFRange,
-        AXUIElementGetPid, AXValueGetType, AXValueGetValue, AXValueRef,
+        kAXFocusedUIElementAttribute, kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute,
+        kAXValueTypeCFRange, AXUIElementGetPid, AXValueGetType, AXValueGetValue, AXValueRef,
     };
     use core_foundation::{
         base::{CFRange, CFType, TCFType},
         string::CFString,
     };
-    use objc2_app_kit::NSRunningApplication;
+    use objc2::{rc::Retained, runtime::ProtocolObject};
+    use objc2_app_kit::{
+        NSPasteboard, NSPasteboardItem, NSPasteboardType, NSPasteboardTypeString,
+        NSPasteboardWriting, NSRunningApplication, NSWorkspace,
+    };
+    use objc2_foundation::{NSArray, NSData};
+
+    struct PasteboardItemSnapshot {
+        payloads: Vec<(Retained<NSPasteboardType>, Retained<NSData>)>,
+    }
+
+    static PASTEBOARD_SELECTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn snapshot_pasteboard(
+        pasteboard: &NSPasteboard,
+    ) -> Result<Vec<PasteboardItemSnapshot>, ApplyOutcome> {
+        let Some(items) = pasteboard.pasteboardItems() else {
+            return Ok(Vec::new());
+        };
+        items
+            .to_vec()
+            .into_iter()
+            .map(|item| {
+                let payloads = item
+                    .types()
+                    .to_vec()
+                    .into_iter()
+                    .map(|kind| {
+                        item.dataForType(&kind)
+                            .map(|data| (kind, data))
+                            .ok_or(ApplyOutcome::Unavailable)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(PasteboardItemSnapshot { payloads })
+            })
+            .collect()
+    }
+
+    fn restore_pasteboard(
+        pasteboard: &NSPasteboard,
+        snapshot: Vec<PasteboardItemSnapshot>,
+    ) -> bool {
+        pasteboard.clearContents();
+        if snapshot.is_empty() {
+            return true;
+        }
+        let items = snapshot
+            .into_iter()
+            .map(|snapshot| {
+                let item = NSPasteboardItem::new();
+                let restored = snapshot
+                    .payloads
+                    .iter()
+                    .all(|(kind, data)| item.setData_forType(data, kind));
+                restored.then_some(item)
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(items) = items else {
+            return false;
+        };
+        let writers: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = items
+            .into_iter()
+            .map(ProtocolObject::from_retained)
+            .collect();
+        pasteboard.writeObjects(&NSArray::from_retained_slice(&writers))
+    }
+
+    fn copy_selection_preserving_pasteboard() -> Result<Option<String>, ApplyOutcome> {
+        let _selection_guard = PASTEBOARD_SELECTION_LOCK
+            .lock()
+            .map_err(|_| ApplyOutcome::Unavailable)?;
+        let pasteboard = NSPasteboard::generalPasteboard();
+        let snapshot = snapshot_pasteboard(&pasteboard)?;
+        pasteboard.clearContents();
+        let empty_change = pasteboard.changeCount();
+
+        let result = if crate::chords::copy_focused_selection().is_err() {
+            Err(ApplyOutcome::Unavailable)
+        } else {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            loop {
+                if pasteboard.changeCount() != empty_change {
+                    let text = pasteboard
+                        .stringForType(unsafe { NSPasteboardTypeString })
+                        .map(|value| value.to_string())
+                        .filter(|value| !value.trim().is_empty());
+                    break Ok(text);
+                }
+                if std::time::Instant::now() >= deadline {
+                    break Ok(None);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+
+        if !restore_pasteboard(&pasteboard, snapshot) {
+            crate::structured_log(
+                "read-selection-fallback",
+                serde_json::json!({ "method": "preserved-copy", "result": "restore-failed" }),
+            );
+            return Err(ApplyOutcome::Unavailable);
+        }
+        crate::structured_log(
+            "read-selection-fallback",
+            serde_json::json!({
+                "method": "preserved-copy",
+                "result": match &result {
+                    Ok(Some(_)) => "captured",
+                    Ok(None) => "empty",
+                    Err(_) => "copy-failed",
+                },
+                "clipboard_restored": true,
+            }),
+        );
+        result
+    }
 
     fn custom(name: &str) -> AXAttribute<CFType> {
         AXAttribute::<CFType>::new(&CFString::new(name))
@@ -286,12 +418,22 @@ mod platform {
         }
     }
 
-    fn focused() -> Result<(AXUIElement, i32, String, usize, usize), ApplyOutcome> {
+    fn focused_element() -> Result<AXUIElement, ApplyOutcome> {
         if !macos_accessibility_client::accessibility::application_is_trusted() {
             return Err(ApplyOutcome::Unavailable);
         }
         let any = AXUIElement::system_wide()
             .attribute(&custom(kAXFocusedUIElementAttribute))
+            .or_else(|_| {
+                // WebKit/Chromium can reject the system-wide lookup while a
+                // global modifier gesture is settling. Query the frontmost
+                // application directly without inspecting any unselected text.
+                let application = NSWorkspace::sharedWorkspace()
+                    .frontmostApplication()
+                    .ok_or(accessibility::Error::NotFound)?;
+                AXUIElement::application(application.processIdentifier())
+                    .attribute(&custom(kAXFocusedUIElementAttribute))
+            })
             .map_err(|_| ApplyOutcome::Unavailable)?;
         let element = any
             .downcast_into::<AXUIElement>()
@@ -301,6 +443,12 @@ mod platform {
         if role.contains("Secure") || subrole.contains("Secure") {
             return Err(ApplyOutcome::SecureField);
         }
+        Ok(element)
+    }
+
+    fn focused() -> Result<(AXUIElement, i32, String, usize, usize), ApplyOutcome> {
+        let element = focused_element()?;
+        let role = element.role().map(|v| v.to_string()).unwrap_or_default();
         let value_is_settable = element.is_settable(&AXAttribute::value()).unwrap_or(false);
         if !value_is_settable {
             return Err(ApplyOutcome::Unavailable);
@@ -350,7 +498,33 @@ mod platform {
         Ok((element, pid, value, selection_start, selection_len))
     }
 
+    fn selected_text_from_accessibility() -> Result<Option<String>, ApplyOutcome> {
+        let element = focused_element()?;
+        if let Ok(value) = element.attribute(&custom(kAXSelectedTextAttribute)) {
+            if let Some(text) = value.downcast_into::<CFString>() {
+                let text = text.to_string();
+                return Ok((!text.trim().is_empty()).then_some(text));
+            }
+        }
+
+        // Editable controls do not all expose AXSelectedText directly. Reuse
+        // the range-checked snapshot before the preserved-copy fallback.
+        let (_, _, value, start, selected_len) = focused()?;
+        if selected_len == 0 {
+            return Ok(None);
+        }
+        char_slice(&value, start, selected_len)
+            .map(Some)
+            .ok_or(ApplyOutcome::Unavailable)
+    }
+
     impl TextBackend for PlatformTextBackend {
+        fn selected_text() -> Result<Option<String>, ApplyOutcome> {
+            resolve_selected_text(selected_text_from_accessibility(), || {
+                copy_selection_preserving_pasteboard()
+            })
+        }
+
         fn capture_target() -> Result<TargetSnapshot, ApplyOutcome> {
             let (element, pid, baseline, start, selected_len) = focused()?;
             let (target_id, scope_id) = identities(&element, pid);
@@ -533,6 +707,48 @@ mod platform {
             ApplyOutcome::ClipboardFallback("verification-failed".into())
         }
     }
+
+    #[cfg(test)]
+    mod pasteboard_tests {
+        use super::*;
+        use objc2_foundation::NSString;
+
+        #[test]
+        fn snapshot_restores_text_and_non_text_formats() {
+            let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+            let custom_type = NSString::from_str("com.tylertools.hereword.test-bytes");
+            let item = NSPasteboardItem::new();
+            assert!(
+                item.setString_forType(&NSString::from_str("original clipboard"), unsafe {
+                    NSPasteboardTypeString
+                },)
+            );
+            assert!(item.setData_forType(&NSData::with_bytes(&[7, 11, 13]), &custom_type));
+            let writer: Retained<ProtocolObject<dyn NSPasteboardWriting>> =
+                ProtocolObject::from_retained(item);
+            assert!(pasteboard.writeObjects(&NSArray::from_retained_slice(&[writer])));
+
+            let snapshot = snapshot_pasteboard(&pasteboard).expect("snapshot should materialize");
+            pasteboard.clearContents();
+            assert!(pasteboard
+                .stringForType(unsafe { NSPasteboardTypeString })
+                .is_none());
+            assert!(restore_pasteboard(&pasteboard, snapshot));
+
+            assert_eq!(
+                pasteboard
+                    .stringForType(unsafe { NSPasteboardTypeString })
+                    .map(|value| value.to_string()),
+                Some("original clipboard".into())
+            );
+            assert_eq!(
+                pasteboard
+                    .dataForType(&custom_type)
+                    .map(|data| data.to_vec()),
+                Some(vec![7, 11, 13])
+            );
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -683,6 +899,42 @@ mod tests {
     fn codex_editor_uses_chromium_projection_rules() {
         assert!(is_chromium_projection("com.openai.codex"));
         assert!(!is_chromium_projection("com.apple.TextEdit"));
+    }
+
+    #[test]
+    fn direct_read_selection_does_not_touch_the_fallback() {
+        let mut fallback_called = false;
+        let selected = resolve_selected_text(Ok(Some("selected".into())), || {
+            fallback_called = true;
+            Ok(Some("fallback".into()))
+        });
+        assert_eq!(selected, Ok(Some("selected".into())));
+        assert!(!fallback_called);
+    }
+
+    #[test]
+    fn unavailable_or_empty_accessibility_selection_uses_the_fallback() {
+        assert_eq!(
+            resolve_selected_text(Err(ApplyOutcome::Unavailable), || {
+                Ok(Some("copied".into()))
+            }),
+            Ok(Some("copied".into()))
+        );
+        assert_eq!(
+            resolve_selected_text(Ok(None), || Ok(Some("copied".into()))),
+            Ok(Some("copied".into()))
+        );
+    }
+
+    #[test]
+    fn secure_read_selection_never_uses_the_fallback() {
+        let mut fallback_called = false;
+        let selected = resolve_selected_text(Err(ApplyOutcome::SecureField), || {
+            fallback_called = true;
+            Ok(Some("must not be read".into()))
+        });
+        assert_eq!(selected, Err(ApplyOutcome::SecureField));
+        assert!(!fallback_called);
     }
 
     #[test]

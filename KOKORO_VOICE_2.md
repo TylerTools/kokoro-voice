@@ -1,4 +1,7 @@
-# Kokoro Voice 2 development line
+# Historical Kokoro Voice 2 development line
+
+> Historical isolation record. The public product is now HereWord; these legacy
+> names document the older app and data namespaces that must remain isolated.
 
 This is an isolated copy of Kokoro Voice. It exists so the installed
 `/Applications/Kokoro Voice.app` remains usable while the replacement is

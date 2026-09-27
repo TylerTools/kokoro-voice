@@ -1,4 +1,4 @@
-# kokoro-voice
+# HereWord
 
 Local read-aloud, dictation, and screen-snip OCR for your desktop. Select text
 anywhere and hear it; hold a key and speak to type; drag a box around anything
@@ -56,24 +56,26 @@ Developer and agent documentation:
 
 ## Install
 
-For macOS on Apple silicon, download
-[Kokoro Voice 2.1](https://github.com/TylerTools/kokoro-voice/releases/tag/v2.1.0-beta.1)
-from the GitHub release. The desktop app installs its private runtime and
-verified models on first launch; no system Python is required.
-
-This beta is ad-hoc signed for local use rather than notarized with an Apple
-Developer ID, so macOS may require first-launch confirmation in Privacy &
-Security. A verified Windows 2.1 installer is not included in this release.
+Signed HereWord packages will appear in
+[GitHub Releases](https://github.com/TylerTools/kokoro-voice/releases) after
+their platform acceptance gates pass. The existing Kokoro-branded releases are
+legacy builds; this repository contains the current HereWord source. The desktop
+app installs its private runtime and verified models on first launch; no system
+Python is required. Release macOS builds require a persistent Developer ID and
+Apple notarization. Windows is built from the same source and UI contract, but
+its installer remains a draft until Authenticode signing and the physical
+Windows acceptance checklist pass.
 
 ```powershell
-.\install.ps1         # Windows
+.\install.ps1 -ReleaseRepository OWNER/HEREWORD-BINARIES
 ```
 
-`install.ps1` is a signed-release bootstrap for Windows. It refuses installers
-whose Authenticode signature is not valid.
+`install.ps1` is a signed-release bootstrap for Windows. Distribution is off by
+default; it requires the approved public binary-only release repository and
+refuses installers whose Authenticode signature is not valid.
 
 `install.sh` is a legacy/manual service-only installer. Do not run it on a Mac
-that uses Kokoro Voice.app: it creates a second engine owner and port conflict.
+that uses HereWord.app: it creates a second engine owner and port conflict.
 
 Then check it:
 
@@ -129,10 +131,14 @@ Environment variables, all optional:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KOKORO_HOST` | `127.0.0.1:8123` | Where the client looks for the service |
+| `KOKORO_HOST` | `127.0.0.1:8125` | Where the supported 2.1 client looks for the service |
 | `KOKORO_VOICE` | `af_heart` | Default voice |
 | `KOKORO_LANG` | `en-us` | Default language |
 | `KOKORO_MAX_CHARS` | `20000` | Reject longer text |
+| `KOKORO_TTS_WORKER_RETIRE_CHARS` | `2000` | Recycle TTS after this much cumulative read-aloud text; `0` keeps it warm |
+| `KOKORO_STT_BASE_IDLE_SECONDS` | `90` | Idle lease after a cold transcription |
+| `KOKORO_STT_REPEAT_IDLE_SECONDS` | `180` | Extended lease after a warm repeat in the same dictation burst |
+| `KOKORO_STT_IDLE_SECONDS` | — | Legacy override for both leases; `0` keeps STT warm indefinitely |
 | `KOKORO_TOKEN` | — | Auth token; normally read from the token file instead |
 | `WHISPER_REPO` | `mlx-community/whisper-large-v3-turbo` | STT model |
 | `WHISPER_LANG` | `en` | Transcription language |
@@ -141,8 +147,9 @@ Environment variables, all optional:
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| `GET` | `/health` | — | status, voice count, `stt_ready` |
+| `GET` | `/health` | — | status, voice count, TTS/STT residency and readiness |
 | `GET` | `/voices` | — | all voice names |
+| `POST` | `/tts/retire` | `{}` | release a partially used TTS worker after cancellation |
 | `POST` | `/speak` | `{"text", "voice", "speed", "lang"}` | `audio/wav` |
 | `POST` | `/transcribe` | raw WAV bytes | `{"text", "audio_seconds", ...}` |
 
@@ -167,8 +174,10 @@ The defaults are deliberately closed:
 - **Nothing sensitive is logged.** Transcripts and spoken text never reach the
   logs — only character counts, durations, and a chars-per-second rate used to
   flag anomalies.
-- Dictation audio is held in memory and posted to the service. It is never
-  written to disk.
+- Dictation audio is held in memory and posted to the service; it is not saved
+  as a recording. Read-aloud uses private temporary WAV chunks, removes them on
+  completion/cancellation, and scavenges only aged, exact app-owned filenames
+  after an abnormal exit without touching exports or unknown files.
 
 ## Measured performance
 
@@ -224,7 +233,7 @@ playing must reach the producer too.
 | | Status |
 |---|---|
 | **macOS** (Apple silicon) | Complete — service, hotkeys, mini player, dictation, snip OCR |
-| **Windows x64** | Desktop host, registered hotkeys, CPU/NVIDIA STT fallback, dictation, and Windows.Media.Ocr implementation; release requires the Windows CI and physical checklist to pass |
+| **Windows x64** | Shared HereWord UI plus native shortcut labels, registered hotkeys, CPU/NVIDIA STT fallback, clipboard dictation, and Windows.Media.Ocr; publication remains blocked on signing credentials and physical acceptance |
 | **Linux** | Clients work; no host integration |
 
 The service and both clients are portable. What is platform-specific is the

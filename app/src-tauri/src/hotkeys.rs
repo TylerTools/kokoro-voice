@@ -4,7 +4,8 @@
 //!
 //! macOS routes modifier-only gestures and complete accelerators through one
 //! Quartz controller because Deskflow events do not reliably trigger the
-//! registered-hotkey API. Windows uses Tauri's global-shortcut plugin.
+//! registered-hotkey API. Windows uses Tauri's global-shortcut plugin for
+//! complete accelerators and a low-level adapter for modifier-only gestures.
 //!
 //! Those platform controllers are implementation details. This module is the
 //! source of truth for slots, defaults, display data, and recorder validation
@@ -12,14 +13,28 @@
 
 use serde::Serialize;
 
-// Deliberately distinct from Kokoro Voice 1 so both event taps can run during
-// verification without one physical press dispatching actions in both apps.
+// Stable is distinct from the legacy app. Candidate adds Shift so its event tap
+// can run beside Stable without one physical press dispatching both builds.
 #[cfg(not(target_os = "windows"))]
-pub const DEFAULT_READ: &str = "Control+Alt+Command+KeyU";
+const CANDIDATE_BUILD: bool = option_env!("KOKORO_BUILD_CHANNEL").is_some();
 #[cfg(not(target_os = "windows"))]
-pub const DEFAULT_DICTATE: &str = "Control+Alt+Command+KeyI";
+pub const DEFAULT_READ: &str = if CANDIDATE_BUILD {
+    "Control+Alt+Command+Shift+KeyU"
+} else {
+    "Control+Alt+Command+KeyU"
+};
 #[cfg(not(target_os = "windows"))]
-pub const DEFAULT_SNIP: &str = "Control+Alt+Command+KeyP";
+pub const DEFAULT_DICTATE: &str = if CANDIDATE_BUILD {
+    "Control+Alt+Command+Shift+KeyI"
+} else {
+    "Control+Alt+Command+KeyI"
+};
+#[cfg(not(target_os = "windows"))]
+pub const DEFAULT_SNIP: &str = if CANDIDATE_BUILD {
+    "Control+Alt+Command+Shift+KeyP"
+} else {
+    "Control+Alt+Command+KeyP"
+};
 #[cfg(target_os = "windows")]
 pub const DEFAULT_READ: &str = "Control+Alt+Shift+KeyU";
 #[cfg(target_os = "windows")]
@@ -109,8 +124,12 @@ pub struct Capture {
 /// `lib.rs`. Modifier gestures use the platform input adapter and require at least
 /// two distinct modifiers so an ordinary Control, Shift, Alt, or Command press
 /// can never trigger an action by itself.
-pub fn classify_capture(slot: Slot, accelerator: &str, _macos: bool) -> Result<Capture, String> {
-    if modifier_only(accelerator) {
+pub fn classify_capture(
+    slot: Slot,
+    accelerator: &str,
+    supports_modifier_gestures: bool,
+) -> Result<Capture, String> {
+    if supports_modifier_gestures && modifier_only(accelerator) {
         let modifiers: Vec<_> = accelerator.split('+').collect();
         if modifiers.len() < 2 {
             return Err("Use at least two modifier keys for a modifier-only shortcut.".into());
@@ -227,18 +246,18 @@ mod tests {
     #[test]
     fn windows_accepts_modifier_chords_but_rejects_single_or_duplicate_modifiers() {
         assert_eq!(
-            classify_capture(Slot::Read, "Control+Alt", false)
+            classify_capture(Slot::Read, "Control+Alt", true)
                 .unwrap()
                 .kind,
             CaptureKind::ModifierGesture
         );
         assert_eq!(
-            classify_capture(Slot::Dictate, "Control+Shift", false)
+            classify_capture(Slot::Dictate, "Control+Shift", true)
                 .unwrap()
                 .kind,
             CaptureKind::ModifierGesture
         );
-        assert!(classify_capture(Slot::Read, "Control", false).is_err());
-        assert!(classify_capture(Slot::Read, "Control+Control", false).is_err());
+        assert!(classify_capture(Slot::Read, "Control", true).is_err());
+        assert!(classify_capture(Slot::Read, "Control+Control", true).is_err());
     }
 }

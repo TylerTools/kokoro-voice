@@ -5,10 +5,10 @@ Dictation client — record from the mic, transcribe locally, print the text.
 Runs in the service venv (needs sounddevice + soundfile), unlike speak.py which
 is deliberately stdlib-only.
 
-Recording stops when a session-specific stop-file appears. That is used instead
-of signals because the desktop host must keep this child alive *after* capture
-ends so it can transcribe; terminating the recorder would race with that work.
-The stop-file makes the ownership handoff explicit and session-safe.
+The desktop host owns one recorder process and sends session-scoped stop/cancel
+commands over its stdin. Session-specific control files remain available for
+manual CLI use and compatibility. Neither mechanism terminates the recorder,
+because it must stay alive after capture ends to transcribe the in-memory WAV.
 
     dictate.py --record --session ID  record until that session is stopped
     dictate.py --stop --session ID    stop only that recording session
@@ -84,6 +84,40 @@ def cancelfile(session: str) -> str:
     return os.path.join(STATE_DIR, f"dictate-{_safe_session(session)}.cancel")
 
 
+def apply_control_line(
+    line: str,
+    session: str,
+    stop_event: threading.Event,
+    cancel_event: threading.Event,
+) -> bool:
+    """Apply one exact, session-scoped control record from the desktop host."""
+    try:
+        message = json.loads(line)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(message, dict) or message.get("session") != session:
+        return False
+    command = message.get("command")
+    if command == "stop":
+        stop_event.set()
+        return True
+    if command == "cancel":
+        cancel_event.set()
+        return True
+    return False
+
+
+def listen_for_controls(
+    session: str,
+    stop_event: threading.Event,
+    cancel_event: threading.Event,
+) -> None:
+    """Read host controls until stdin closes or the session is commanded."""
+    for line in sys.stdin:
+        if apply_control_line(line, session, stop_event, cancel_event):
+            return
+
+
 def _token() -> str | None:
     if TOKEN:
         return TOKEN
@@ -131,6 +165,13 @@ def record_until_stopped(
 
     control = stopfile(session)
     cancel = cancelfile(session)
+    stop_event = threading.Event()
+    cancel_event = threading.Event()
+    threading.Thread(
+        target=listen_for_controls,
+        args=(session, stop_event, cancel_event),
+        daemon=True,
+    ).start()
 
     frames: list = []
     preview_stop = threading.Event()
@@ -189,7 +230,12 @@ def record_until_stopped(
             threading.Thread(target=preview_worker, daemon=True).start()
         t0 = time.time()
         inactivity_warned = False
-        while not os.path.exists(control) and not os.path.exists(cancel):
+        while (
+            not stop_event.is_set()
+            and not cancel_event.is_set()
+            and not os.path.exists(control)
+            and not os.path.exists(cancel)
+        ):
             time.sleep(0.05)
             silent_for = time.monotonic() - last_voice[0]
             if silent_for < 3:
@@ -203,7 +249,7 @@ def record_until_stopped(
 
     preview_stop.set()
 
-    if os.path.exists(cancel):
+    if cancel_event.is_set() or os.path.exists(cancel):
         try:
             os.remove(cancel)
         except OSError:

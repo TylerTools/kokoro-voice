@@ -1,12 +1,12 @@
-# Kokoro Voice agent and developer guide
+# HereWord agent and developer guide
 
-## Kokoro Voice 2.1 isolation boundary
+## HereWord isolation boundary
 
-This checkout is the isolated Kokoro Voice 2.1 development line. Never edit,
+This checkout is the isolated HereWord development line. Never edit,
 replace, stop, re-sign, or test through `/Applications/Kokoro Voice 2.app` or the
 original `/Users/tylerthompson/tts/kokoro-service` checkout.
 
-Kokoro Voice 2.1 owns only:
+HereWord owns only:
 
 - bundle identifier `com.tylertools.kokoro-voice-2-1`;
 - loopback port `8125`;
@@ -16,9 +16,10 @@ Kokoro Voice 2.1 owns only:
 - its own launch-at-login registration and complete-key shortcuts.
 
 Do not launch or install a candidate until `tests/test_variant_isolation.py`
-passes. Keep the original app running during source work. A candidate may run
-beside it only after its bundle, process, port, paths, and shortcuts have been
-verified as distinct.
+passes. Keep Stable running during source work. Candidate is passive: it must
+never register global hotkeys or start the macOS input controller beside
+Stable. Accessibility behavior is verified only during the transactional
+Stable cutover, with automatic rollback if fresh readiness evidence fails.
 
 This file is the operating contract for anyone changing this repository. Read
 it together with [ARCHITECTURE.md](ARCHITECTURE.md) before editing desktop
@@ -26,7 +27,7 @@ shortcuts, process lifecycle, live dictation, setup, or release code.
 
 ## Product contract
 
-Kokoro Voice is a local desktop accessibility app with three user actions:
+HereWord is a local desktop accessibility app with three user actions:
 
 1. **Read** — speak the selected text.
 2. **Dictate** — record while held, transcribe locally, and insert safely.
@@ -50,6 +51,11 @@ and performs no outbound network requests after setup.
 | `app/src-tauri/src/dictation_protocol.rs` | Typed parser for the Python dictation child's stdout contract. |
 | `app/src-tauri/src/hotkeys.rs` | Shortcut domain model, defaults, display contract, and recorder classification. |
 | `app/src-tauri/src/chords.rs` | macOS Quartz adapter for modifier-only Read/Dictate gestures and synthetic text events. |
+| `app/src-tauri/src/windows_chords.rs` | Windows adapter for modifier-only gestures; complete accelerators remain in Tauri. |
+| `app/src-tauri/src/selection.rs` | Windows UI Automation selection capture and secure-field rejection. |
+| `app/src-tauri/src/read_action.rs` | Clipboard-free Read decision policy: speak, toggle, or explain rejection. |
+| `app/src-tauri/src/runtime.rs` | Authenticated engine lifecycle, app-owned model cache, paths, watchdog, and structured logs. |
+| `app/src-tauri/src/runtime_hygiene.rs` | Exact-name, age-gated cleanup for app-managed temporary runtime files. |
 | `app/src-tauri/src/text_backend.rs` | Target-locked accessibility insertion and browser projection verification. |
 | `app/index.html` / `app/player.html` | Settings and floating-status markup. |
 | `tests/` | Python service/client contract tests. Rust unit tests live beside their modules. |
@@ -71,7 +77,7 @@ unless the task explicitly concerns that legacy integration.
 | `smoke_test.py`, `benchmark_stt.py` | Developer measurement tools | Not runtime entrypoints and never bundled. |
 
 Only one process owner may manage the engine. For the supported desktop
-product that owner is `/Applications/Kokoro Voice.app`; a launchd service from
+product that owner is `/Applications/HereWord.app`; a launchd service from
 `install.sh` or Hammerspoon host running alongside it is a configuration error.
 
 ## Failure routing
@@ -126,9 +132,11 @@ macOS uses one Quartz input controller:
 - Quartz owns every configurable modifier-only gesture and complete
   accelerator. Modifier-only gestures require at least two distinct modifiers;
   a Windows/Super key arriving through Deskflow is stored as Command.
-- Tauri global shortcuts are Windows-only. Deskflow-generated key events reach
-  Quartz but do not reliably trigger macOS's registered-hotkey callback; never
-  route macOS actions back through that split path.
+- Tauri global shortcuts are Windows-only. Windows modifier-only gestures use
+  `windows_chords.rs`, while complete accelerators stay in Tauri.
+  Deskflow-generated key events reach Quartz but do not reliably trigger
+  macOS's registered-hotkey callback; never route macOS actions back through
+  that split path.
 
 Any modifier-only Dictate chord can be a prefix of a complete shortcut using
 the same modifiers. The Quartz controller must leave a short grace period
@@ -156,7 +164,7 @@ shortcut. The proof event is `hotkey-triggered` followed by the action event.
 There are three different artifacts; always identify which one was verified:
 
 1. Repository source: this checkout.
-2. Installed bundle: `/Applications/Kokoro Voice 2.1.app`.
+2. Installed bundle: `/Applications/HereWord.app` (legacy installs use `/Applications/Kokoro Voice 2.1.app` until the first branded update).
 3. Synced engine source: `~/Library/Application Support/Kokoro Voice 2.1/engine`.
 
 User state is under `~/.config/kokoro-voice-2-1/`:
@@ -170,6 +178,10 @@ User state is under `~/.config/kokoro-voice-2-1/`:
 The private environment and models remain in Application Support across app
 updates. Startup synchronizes bundled Python sources before launching the
 engine. Never write into the installed `.app` at runtime; it breaks signing.
+The bearer token is validated or atomically bootstrapped on every engine launch.
+The macOS Whisper cache is app-owned; adoption from the global cache must use
+validated hard links and must never silently duplicate the model. Candidate may
+clean only its own runtime namespace. Stable alone owns legacy cleanup.
 
 Local ad-hoc signatures use the binary CDHash as their designated requirement.
 Every rebuilt binary therefore appears to macOS privacy controls as a different
@@ -193,7 +205,7 @@ expected. A stable signing identity removes this development-only churn.
 - Do not mark a shortcut working from unit tests alone. Verify the installed
   bundle and runtime events.
 - Do not run `install.sh` on a machine using the desktop app. Two engine owners
-  will contend for port 8123 and produce misleading health/lifecycle failures.
+  will contend for port 8125 and produce misleading health/lifecycle failures.
 - Local bundle replacement is recoverable. Public signing, notarization,
   publishing, or release upload requires separate authority.
 
@@ -204,6 +216,9 @@ Run from the repository root unless noted:
 ```sh
 uv run --python .venv/bin/python python -m unittest discover -s tests -v
 cd app && npm run build
+cd app && npm test
+cd app && npm run test:visual
+python3 scripts/release/verify_version_sync.py
 cargo fmt --check --manifest-path app/src-tauri/Cargo.toml
 cargo test --manifest-path app/src-tauri/Cargo.toml
 cargo clippy --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings
@@ -215,7 +230,7 @@ For a local macOS bundle:
 ```sh
 cd app
 PATH="$HOME/.local/node/bin:$HOME/.cargo/bin:$PATH" npm run tauri -- build --bundles app
-codesign --verify --deep --strict "src-tauri/target/release/bundle/macos/Kokoro Voice 2.1.app"
+codesign --verify --deep --strict "src-tauri/target/release/bundle/macos/HereWord.app"
 ```
 
 After installing, verify `/health`, Accessibility and Input Monitoring for the

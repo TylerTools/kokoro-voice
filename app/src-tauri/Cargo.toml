@@ -1,7 +1,7 @@
 [package]
 name = "kokoro-voice-2-1"
-version = "2.1.0-beta.1"
-description = "Isolated next-generation build of Kokoro Voice"
+version = "2.1.1-beta.9"
+description = "Private local dictation and read-aloud desktop utility"
 authors = ["TYLERtools.net"]
 edition = "2021"
 
@@ -40,8 +40,11 @@ accessibility = "0.2.0"
 accessibility-sys = "0.2.0"
 macos-accessibility-client = "0.0.2"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSColor", "NSGraphics", "NSPanel", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "libc"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSColor", "NSGraphics", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "NSWorkspace", "libc"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSData", "NSString"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGEvent"] }
+block2 = "0.6.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

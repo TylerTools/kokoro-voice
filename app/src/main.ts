@@ -1,5 +1,5 @@
 /**
- * Kokoro Voice settings control plane.
+ * HereWord settings control plane.
  *
  * This frontend renders engine state and captures user input, but Rust owns
  * process lifecycle, shortcut meaning/registration, permissions, and durable
@@ -9,11 +9,26 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
+import {
+  nextSetupStep,
+  permissionReady,
+  type PermissionState,
+  type SetupReport,
+  type SetupStep,
+} from "./setup_flow";
+import {
+  formatShortcut,
+  permissionSettingsName,
+  setupIntro,
+  versionLabel,
+  type AppInfo,
+} from "./platform_ui";
 
 type Health = {
   status: string;
   voices?: number;
   stt_ready?: boolean;
+  stt_warm?: boolean;
   auth_required?: boolean;
 };
 
@@ -39,13 +54,28 @@ function isHotkeySlot(value: string | undefined): value is HotkeySlot {
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
 const detail = document.getElementById("detail") as HTMLSpanElement;
+let currentAppInfo: AppInfo = {
+  app_version: "",
+  build_revision: "development",
+  platform: "unknown",
+  architecture: "",
+  paste_shortcut: "the paste shortcut",
+};
+
+function renderAppIdentity(info: AppInfo): void {
+  currentAppInfo = info;
+  document.body.dataset.platform = info.platform;
+  const intro = document.getElementById("setup-intro");
+  if (intro) intro.textContent = setupIntro(info);
+  const version = document.getElementById("app-version");
+  if (version) version.textContent = versionLabel(info);
+}
 
 /**
  * Poll the engine and describe it in plain language.
  *
- * The engine takes a few seconds to warm the speech model after launch, so
- * "starting" is a real, expected state rather than an error — saying "down"
- * during normal startup would train people to ignore the indicator.
+ * TTS readiness gates startup. STT may intentionally be cold because its
+ * memory is reclaimed after inactivity; cold is ready on demand, not degraded.
  */
 async function refresh(): Promise<void> {
   let h: Health;
@@ -58,32 +88,31 @@ async function refresh(): Promise<void> {
   statusEl.classList.remove("status--ok", "status--warn", "status--down", "status--unknown");
 
   // Not installed is a first-run state, not a failure — show setup, not an error.
-  const setup = document.getElementById("setup") as HTMLElement;
   if (h.status === "not-installed") {
-    setup.hidden = false;
     statusEl.classList.add("status--warn");
     statusText.textContent = "Setup needed";
-    detail.textContent = "Download the voices to get started.";
+    statusEl.title = "Finish setup to enable HereWord.";
     return;
   }
-  setup.hidden = true;
 
   if (h.status === "ok" && h.stt_ready) {
     statusEl.classList.add("status--ok");
     statusText.textContent = "Ready";
-    detail.textContent = `${h.voices ?? 0} voices · speech recognition ready`;
+    statusEl.title = h.stt_warm
+      ? `${h.voices ?? 0} voices · speech recognition ready`
+      : `${h.voices ?? 0} voices · speech recognition ready on demand`;
   } else if (h.status === "ok") {
     statusEl.classList.add("status--warn");
-    statusText.textContent = "Almost ready";
-    detail.textContent = "Reading works now; speech recognition is still warming up.";
+    statusText.textContent = "Dictation retrying";
+    statusEl.title = "Reading works. Dictation will retry when used.";
   } else if (h.status === "starting") {
     statusEl.classList.add("status--warn");
     statusText.textContent = "Starting…";
-    detail.textContent = "Loading the voices. This takes a few seconds after launch.";
+    statusEl.title = "Loading local voices.";
   } else {
     statusEl.classList.add("status--down");
     statusText.textContent = "Not running";
-    detail.textContent = "The engine isn't responding. Quit and reopen Kokoro Voice.";
+    statusEl.title = "Quit and reopen HereWord.";
   }
 }
 
@@ -101,7 +130,7 @@ document.querySelectorAll<HTMLButtonElement>("button[data-cmd]").forEach((btn) =
       } else {
         await invoke(cmd);
       }
-      btn.textContent = "✓";
+      btn.textContent = "Done";
       setTimeout(() => (btn.textContent = original), 900);
     } catch (e) {
       btn.textContent = "failed";
@@ -111,48 +140,26 @@ document.querySelectorAll<HTMLButtonElement>("button[data-cmd]").forEach((btn) =
   });
 });
 
-document.getElementById("open-accessibility")?.addEventListener("click", async () => {
-  await invoke("retry_permission", { capability: "accessibility" });
-  await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
-});
-
-document.getElementById("open-input-monitoring")?.addEventListener("click", async () => {
-  await invoke("retry_permission", { capability: "input-monitoring" });
-  await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
-});
-
 document.getElementById("export-diagnostics")?.addEventListener("click", async () => {
   const path = await invoke<string>("export_diagnostics");
   detail.textContent = `Diagnostics saved to ${path}`;
 });
 
-document.getElementById("run-system-check")?.addEventListener("click", async (event) => {
-  const button = event.currentTarget as HTMLButtonElement;
-  button.disabled = true;
-  detail.textContent = "Checking engine, permissions, hotkeys, and microphone…";
-  try {
-    const report = await invoke<Record<string, unknown>>("system_check");
-    const permissions = report.permissions as Record<string, string>;
-    const engine = report.engine as Record<string, string>;
-    if (engine.status !== "ok") {
-      detail.textContent = "The speech engine is not ready. Export diagnostics for details.";
-    } else if (!["available", "not-required"].includes(permissions.accessibility)) {
-      detail.textContent = "Accessibility is off. Enable Kokoro Voice, then run this check again.";
-    } else if (!["available", "not-required"].includes(permissions.input_monitoring)) {
-      detail.textContent = "Input Monitoring is off. Enable Kokoro Voice, then run this check again.";
-    } else {
-      detail.textContent = "System check passed. Shortcuts are listening.";
-    }
-  } catch (error) {
-    detail.textContent = `System check failed: ${error}`;
-  } finally {
-    button.disabled = false;
-  }
-});
-
-invoke<{ engine_bytes: number }>("storage_status").then((storage) => {
+invoke<{
+  engine_bytes: number;
+  config_bytes: number;
+  legacy_runtime_bytes: number;
+  shared_stt_cache_bytes: number;
+}>("storage_status").then((storage) => {
   const el = document.getElementById("storage-detail");
-  if (el) el.textContent = `${(storage.engine_bytes / 1_000_000_000).toFixed(2)} GB of downloaded local data`;
+  if (el) {
+    const owned = (storage.engine_bytes + storage.config_bytes) / 1_000_000_000;
+    const shared = storage.shared_stt_cache_bytes / 1_000_000_000;
+    const legacy = storage.legacy_runtime_bytes / 1_000_000;
+    el.textContent = `${owned.toFixed(2)} GB app data + ${shared.toFixed(2)} GB shared speech model${
+      legacy > 0 ? `; ${legacy.toFixed(1)} MB legacy temporary audio` : ""
+    }`;
+  }
 });
 
 document.getElementById("remove-local-data")?.addEventListener("click", async () => {
@@ -162,7 +169,140 @@ document.getElementById("remove-local-data")?.addEventListener("click", async ()
   window.location.reload();
 });
 
-// Live setup progress from Rust.
+// One guided setup transaction. Rust reports the platform's permission facts;
+// this shared UI renders only the steps that apply to that platform.
+const GUIDED_SETUP_KEY = "kokoro-guided-setup-active";
+const setupCard = document.getElementById("setup") as HTMLElement;
+const setupButton = document.getElementById("setup-go") as HTMLButtonElement;
+const setupMessage = document.getElementById("setup-msg") as HTMLElement;
+const setupCancel = document.getElementById("setup-cancel") as HTMLButtonElement;
+let guidedSetupActive = localStorage.getItem(GUIDED_SETUP_KEY) === "1";
+let setupReport: SetupReport | null = null;
+let requestedStep: SetupStep | null = null;
+let setupRefreshInFlight = false;
+let setupEffectInFlight = false;
+
+function setSetupActive(active: boolean): void {
+  guidedSetupActive = active;
+  if (active) localStorage.setItem(GUIDED_SETUP_KEY, "1");
+  else localStorage.removeItem(GUIDED_SETUP_KEY);
+}
+
+function renderPermissionState(id: string, state: PermissionState | undefined): void {
+  const element = document.getElementById(id);
+  if (!element) return;
+  const ready = permissionReady(state);
+  element.textContent = state === "checked-on-use" ? "On first use" : ready ? "Ready" : "Needs approval";
+  element.classList.toggle("setup-state--ready", ready);
+  element.classList.toggle("setup-state--needed", !ready);
+}
+
+function renderPermissionRow(id: string, state: PermissionState | undefined): void {
+  const element = document.getElementById(id);
+  if (element) element.hidden = state === "not-required";
+}
+
+function renderSetup(report: SetupReport): SetupStep {
+  renderAppIdentity(report.app);
+  const step = nextSetupStep(report);
+  const engineReady = report.offline_ready && report.engine.status === "ok";
+  const engineState = document.getElementById("setup-state-engine") as HTMLElement;
+  engineState.textContent = engineReady ? "Ready" : report.offline_ready ? "Starting…" : "Not installed";
+  engineState.classList.toggle("setup-state--ready", engineReady);
+  engineState.classList.toggle("setup-state--needed", !engineReady);
+  renderPermissionState("setup-state-microphone", report.permissions.microphone);
+  renderPermissionState("setup-state-accessibility", report.permissions.accessibility);
+  renderPermissionState("setup-state-input", report.permissions.input_monitoring);
+  renderPermissionRow("setup-row-microphone", report.permissions.microphone);
+  renderPermissionRow("setup-row-accessibility", report.permissions.accessibility);
+  renderPermissionRow("setup-row-input", report.permissions.input_monitoring);
+
+  setupCard.hidden = step === "complete";
+  setupButton.hidden = step === "complete";
+  setupButton.disabled = step === "engine-starting" || setupEffectInFlight;
+  const labels: Record<SetupStep, string> = {
+    download: "Download & finish setup",
+    "engine-starting": "Starting…",
+    microphone: "Allow Microphone",
+    accessibility: "Continue in Accessibility",
+    "input-monitoring": "Continue in Input Monitoring",
+    complete: "Setup complete",
+  };
+  setupButton.textContent = labels[step];
+  if (step === "complete") {
+    setSetupActive(false);
+    setupMessage.textContent = "";
+  } else if (!guidedSetupActive && !setupEffectInFlight) {
+    setupMessage.textContent = "HereWord continues as soon as each approval is on.";
+  }
+  return step;
+}
+
+async function advanceGuidedSetup(report: SetupReport): Promise<void> {
+  if (!guidedSetupActive || setupEffectInFlight) return;
+  const step = nextSetupStep(report);
+  if (step === "download" || step === "engine-starting" || step === "complete" || requestedStep === step) return;
+  setupEffectInFlight = true;
+  requestedStep = step;
+  try {
+    if (step === "microphone") {
+      setupMessage.textContent = "Allow HereWord to use the microphone. Setup will continue automatically.";
+      const result = await invoke<{ available?: boolean; requested?: boolean }>("retry_permission", { capability: "microphone" });
+      if (!result.available && !result.requested) {
+        await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
+      } else if (result.available) {
+        requestedStep = null;
+        window.setTimeout(() => { void refreshSetup(true); }, 0);
+      }
+    } else if (step === "accessibility") {
+      setupMessage.textContent = "Turn on HereWord in Accessibility. This page will continue automatically.";
+      const result = await invoke<{ available?: boolean }>("retry_permission", { capability: "accessibility" });
+      if (!result.available) {
+        await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+      } else {
+        requestedStep = null;
+        window.setTimeout(() => { void refreshSetup(true); }, 0);
+      }
+    } else if (step === "input-monitoring") {
+      setupMessage.textContent = "Turn on HereWord in Input Monitoring. HereWord will finish when macOS confirms it.";
+      const result = await invoke<{ available?: boolean }>("retry_permission", { capability: "input-monitoring" });
+      if (!result.available) {
+        await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
+      } else {
+        requestedStep = null;
+        window.setTimeout(() => { void refreshSetup(true); }, 0);
+      }
+    }
+  } catch (error) {
+    requestedStep = null;
+    setupMessage.textContent = `Setup could not continue: ${error}`;
+  } finally {
+    setupEffectInFlight = false;
+    if (setupReport) renderSetup(setupReport);
+  }
+}
+
+async function refreshSetup(advance = guidedSetupActive): Promise<void> {
+  if (setupRefreshInFlight) return;
+  setupRefreshInFlight = true;
+  try {
+    setupReport = await invoke<SetupReport>("system_check");
+    const wasGuided = guidedSetupActive;
+    const step = renderSetup(setupReport);
+    if (step === "complete" && wasGuided) {
+      detail.textContent = "Setup complete.";
+    } else if (advance) {
+      await advanceGuidedSetup(setupReport);
+    }
+  } catch (error) {
+    setupCard.hidden = false;
+    setupMessage.textContent = `HereWord could not verify setup: ${error}`;
+  } finally {
+    setupRefreshInFlight = false;
+  }
+}
+
+// Live engine-install progress from Rust.
 listen<{ pct: number; message: string }>("setup-progress", (e) => {
   const wrap = document.getElementById("bar-wrap") as HTMLElement;
   const bar = document.getElementById("bar") as HTMLElement;
@@ -172,37 +312,49 @@ listen<{ pct: number; message: string }>("setup-progress", (e) => {
   msg.textContent = e.payload.message;
 });
 
+listen<boolean>("microphone-permission-changed", () => {
+  requestedStep = null;
+  void refreshSetup(true);
+});
+
 document.getElementById("setup-go")?.addEventListener("click", async (ev) => {
   const btn = ev.currentTarget as HTMLButtonElement;
-  const msg = document.getElementById("setup-msg") as HTMLElement;
+  requestedStep = null;
+  setSetupActive(true);
+  if (!setupReport) await refreshSetup(false);
+  if (!setupReport) return;
+  const step = nextSetupStep(setupReport);
+  if (step !== "download") {
+    await advanceGuidedSetup(setupReport);
+    return;
+  }
   btn.disabled = true;
-  const cancel = document.getElementById("setup-cancel") as HTMLButtonElement;
-  cancel.hidden = false;
+  setupCancel.hidden = false;
   btn.textContent = "Installing…";
   try {
     await invoke("setup_engine");
-    msg.textContent = "Done. Starting up…";
+    setupMessage.textContent = "Models installed. Starting HereWord…";
   } catch (e) {
     // Setup is resumable, so say so rather than leaving a dead end.
-    msg.textContent = `${e} — press Retry to pick up where it stopped.`;
+    setupMessage.textContent = `${e} — press Retry to pick up where it stopped.`;
     btn.disabled = false;
-    cancel.hidden = true;
+    setupCancel.hidden = true;
     btn.textContent = "Retry";
     return;
   }
-  cancel.hidden = true;
-  setTimeout(refresh, 1500);
+  setupCancel.hidden = true;
+  requestedStep = null;
+  await refreshSetup(true);
 });
 
 document.getElementById("setup-cancel")?.addEventListener("click", async (ev) => {
   (ev.currentTarget as HTMLButtonElement).disabled = true;
   await invoke("cancel_setup");
+  setSetupActive(false);
 });
 
 // Show the real hotkeys rather than hardcoding them in the markup.
 type HotkeyResponse = Record<HotkeySlot, string> & {
-  modifier_labels: Record<string, string>;
-  separator: string;
   bindings: Record<HotkeySlot, { label: string; registered: boolean; configurable: boolean }>;
 };
 
@@ -218,13 +370,12 @@ type HotkeyCapture = {
 let awaitingHotkeyVerification: HotkeySlot | null = null;
 listen<HotkeySlot>("hotkey-triggered", (event) => {
   if (event.payload !== awaitingHotkeyVerification) return;
-  detail.textContent = `${event.payload} shortcut verified — it reached Kokoro.`;
+  detail.textContent = `${event.payload} shortcut verified — it reached HereWord.`;
   awaitingHotkeyVerification = null;
 });
 
-invoke<HotkeyResponse>("hotkeys").then((hk) => {
-  Object.assign(MOD_GLYPH, hk.modifier_labels);
-  modifierSeparator = hk.separator;
+async function refreshHotkeys(): Promise<void> {
+  const hk = await invoke<HotkeyResponse>("hotkeys");
   const set = (id: string, v: string) => {
     const el = document.getElementById(id);
     if (el) el.textContent = pretty(v);
@@ -238,43 +389,25 @@ invoke<HotkeyResponse>("hotkeys").then((hk) => {
     btn.hidden = binding ? !binding.configurable : false;
   });
   if (Object.values(hk.bindings).some((binding) => !binding.registered)) {
-    detail.textContent = "Shortcuts are off. Run System Check and enable the permission it names.";
+    detail.textContent = "Shortcuts need setup. Use Finish setup above; HereWord will detect the approvals.";
   }
-});
+}
 
-let testingDictation = false;
-let directInsertionAvailable = false;
 listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
-  if (e.payload.state === "starting") {
-    testingDictation = document.activeElement?.id === "dictation-test";
-  }
   const messages: Record<DictationState, string> = {
     starting: "Opening microphone…",
     recording: "Listening…",
     transcribing: "Transcribing locally…",
-    completed: "Dictation inserted and copied to the clipboard.",
+    completed: "Dictation complete.",
     cancelled: "Dictation cancelled.",
-    "permission-denied": "Microphone permission denied. Open Privacy & Security.",
+    "permission-denied": `Microphone permission denied. Open ${permissionSettingsName(currentAppInfo)}.`,
     "device-unavailable": "The selected microphone is unavailable.",
     "timed-out": "The microphone did not open in time.",
-    "live-typing": "Typing the local transcript…",
-    "clipboard-fallback": "The transcript was copied because the target could not be verified.",
+    "live-typing": "Typing…",
+    "clipboard-fallback": `Copied. Press ${currentAppInfo.paste_shortcut} to paste.`,
     "cancelled-by-user": "Dictation cancelled.",
   };
   detail.textContent = messages[e.payload.state];
-});
-
-listen<string>("dictated", async () => {
-  if (!directInsertionAvailable) return;
-  const test = document.getElementById("dictation-test") as HTMLTextAreaElement;
-  if (!testingDictation || !test || !test.value.trim()) return;
-  testingDictation = false;
-  const status = document.getElementById("dictation-test-status") as HTMLElement;
-  await invoke("record_capability", { capability: "dictation-insertion", passed: true });
-  await invoke("set_prefs", { livePreview: true });
-  const toggle = document.getElementById("live-preview") as HTMLInputElement;
-  if (toggle) toggle.checked = true;
-  status.textContent = "Dictation passed. Live typing is enabled.";
 });
 
 // ── voice & speed ───────────────────────────────────────────────────────────
@@ -286,10 +419,13 @@ async function initPrefs() {
   const cueEnabled = document.getElementById("cue-enabled") as HTMLInputElement;
   const cueVolume = document.getElementById("cue-volume") as HTMLInputElement;
   const cueVolumeLabel = document.getElementById("cue-volume-label") as HTMLOutputElement;
+  const cueVolumeRow = document.getElementById("cue-volume-row") as HTMLElement;
   cueEnabled.checked = prefs.cue_enabled !== false;
+  cueVolumeRow.hidden = !cueEnabled.checked;
   cueVolume.value = String(Math.round((prefs.cue_volume ?? 0.22) * 100));
   cueVolumeLabel.value = `${cueVolume.value}%`;
   cueEnabled.onchange = () => {
+    cueVolumeRow.hidden = !cueEnabled.checked;
     void invoke("set_prefs", { cueEnabled: cueEnabled.checked });
   };
   cueVolume.oninput = () => {
@@ -367,40 +503,11 @@ async function initPrefs() {
 // arrives — after any KVM has translated it. e.code is used rather than e.key
 // because a KVM can rewrite the produced character while the physical key code
 // survives.
-const MOD_GLYPH: Record<string, string> = {
-  Control: "\u2303", Alt: "\u2325", Shift: "\u21e7", Command: "\u2318",
-};
-let modifierSeparator = "";
 const MODIFIER_ORDER = ["Control", "Alt", "Shift", "Command"];
 
 function pretty(accel: string): string {
-  return accel
-    .split("+")
-    .map((p) => MOD_GLYPH[p] ?? p.replace(/^Key/, "").replace(/^Digit/, ""))
-    .join(modifierSeparator);
+  return formatShortcut(accel, currentAppInfo.platform);
 }
-
-// Render the backend's capability contract without guessing the operating system.
-invoke<{ accessibility: string; direct_insertion: boolean }>("permission_status").then((capabilities) => {
-  directInsertionAvailable = capabilities.direct_insertion;
-  const setText = (id: string, text: string) => {
-    const element = document.getElementById(id);
-    if (element) element.textContent = text;
-  };
-  if (capabilities.accessibility === "not-required") {
-    for (const id of ["open-accessibility", "open-input-monitoring", "permission-list"]) {
-      document.getElementById(id)?.setAttribute("hidden", "");
-    }
-    setText("permissions-help", "Dictation uses your microphone. If access is blocked, check Windows Settings → Privacy & security → Microphone → Let desktop apps access your microphone.");
-    setText("screen-permission-help", "Uses Windows screen capture and local OCR.");
-  }
-  if (!capabilities.direct_insertion) {
-    document.getElementById("live-preview-field")?.setAttribute("hidden", "");
-    setText("dictation-help", "Hold your dictation shortcut, speak, then release. Your transcript is copied to the clipboard. Press Ctrl+V where you want to paste it.");
-    setText("dictation-test-help", "Hold your dictation shortcut, speak, then release. Click the box below and press Ctrl+V to check the transcript.");
-    setText("dictation-test-status", "Windows dictation uses the clipboard; automatic live typing is not available.");
-  }
-});
 
 function accelFrom(e: KeyboardEvent, observedModifiers: ReadonlySet<string>): string | null {
   const modifiers = new Set(observedModifiers);
@@ -528,6 +635,24 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
   });
 });
 
+async function bootstrap(): Promise<void> {
+  await refreshSetup();
+  await refreshHotkeys();
+}
+
 initPrefs();
 refresh();
-setInterval(refresh, 4000);
+void bootstrap();
+setInterval(() => {
+  if (document.visibilityState === "visible") {
+    void refresh();
+    void refreshSetup();
+  }
+}, 4000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    void refresh();
+    void refreshSetup();
+  }
+});
+window.addEventListener("focus", () => { void refreshSetup(); });

@@ -11,19 +11,19 @@
 //! nothing. macOS has never had that problem for dictation because it reads
 //! `kAXSelectedTextRange` directly; this is the same idea on Windows.
 //!
-//! `None` is not an error. It means "ask the clipboard instead", and every
-//! caller must keep that fallback: plenty of controls expose no text pattern.
+//! `Unavailable` means "ask the clipboard instead": plenty of controls expose
+//! no text pattern. `Secure` is deliberately distinct so password fields can
+//! never fall through to the clipboard fallback.
 
-/// The selected text, or `None` when the platform cannot answer.
-#[cfg(target_os = "windows")]
-pub fn focused_selection() -> Option<String> {
-    platform::focused_selection()
+pub enum Selection {
+    Selected(String),
+    Secure,
+    Unavailable,
 }
 
-/// macOS keeps its existing clipboard path; other platforms have none.
-#[cfg(not(target_os = "windows"))]
-pub fn focused_selection() -> Option<String> {
-    None
+/// The selected text or the reason direct capture cannot be used.
+pub fn focused_selection() -> Selection {
+    platform::focused_selection()
 }
 
 #[cfg(target_os = "windows")]
@@ -35,15 +35,22 @@ mod platform {
         CUIAutomation, IUIAutomation, IUIAutomationTextPattern, UIA_TextPatternId,
     };
 
-    pub fn focused_selection() -> Option<String> {
+    use super::Selection;
+
+    pub fn focused_selection() -> Selection {
         unsafe {
             // This runs on whichever thread the hotkey landed on, which may not
             // have an apartment yet. An already-initialized apartment reports an
             // error that is not a failure for us, so the result is discarded.
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
-            let focused = automation.GetFocusedElement().ok()?;
+            let Ok(automation): Result<IUIAutomation, _> =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+            else {
+                return Selection::Unavailable;
+            };
+            let Ok(focused) = automation.GetFocusedElement() else {
+                return Selection::Unavailable;
+            };
             // Never read a password out loud, and never route it through the
             // clipboard fallback either — refuse the whole action instead.
             if focused
@@ -51,16 +58,24 @@ mod platform {
                 .map(|value| value.as_bool())
                 .unwrap_or(false)
             {
-                return None;
+                return Selection::Secure;
             }
-            let pattern: IUIAutomationTextPattern =
-                focused.GetCurrentPatternAs(UIA_TextPatternId).ok()?;
-            let ranges = pattern.GetSelection().ok()?;
+            let Ok(pattern): Result<IUIAutomationTextPattern, _> =
+                focused.GetCurrentPatternAs(UIA_TextPatternId)
+            else {
+                return Selection::Unavailable;
+            };
+            let Ok(ranges) = pattern.GetSelection() else {
+                return Selection::Unavailable;
+            };
             // A selection is one range in ordinary controls, but tables and
             // some editors report a disjoint set; concatenating matches what a
             // copy would have produced.
             let mut text = String::new();
-            for index in 0..ranges.Length().ok()? {
+            let Ok(length) = ranges.Length() else {
+                return Selection::Unavailable;
+            };
+            for index in 0..length {
                 if let Ok(range) = ranges.GetElement(index) {
                     if let Ok(part) = range.GetText(-1) {
                         text.push_str(&part.to_string());
@@ -72,9 +87,9 @@ mod platform {
                 // An empty selection is indistinguishable from "this control
                 // cannot tell us", and the clipboard may still hold something
                 // worth reading, so defer rather than declaring nothing.
-                None
+                Selection::Unavailable
             } else {
-                Some(trimmed.to_string())
+                Selection::Selected(trimmed.to_string())
             }
         }
     }

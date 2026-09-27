@@ -1,10 +1,10 @@
-# Local Windows build
+# Windows status and local build
 
-Open **Kokoro Voice 2.1** from the Start menu or its desktop shortcut.
+Open **HereWord** from the Start menu or its desktop shortcut.
 The desktop app owns the local speech engine on `127.0.0.1:8125`.
 
-The Windows tray update in source adds the tooltip **Kokoro Voice 2.1 — Settings**.
-Left-click the Kokoro icon beside the clock to open or restore Settings;
+The Windows tray uses the tooltip **HereWord — Settings**.
+Left-click the HereWord icon beside the clock to open or restore Settings;
 right-click for Settings, Read selection, Snip & read, Stop, and Quit.
 Windows may place the icon under the **^** hidden-icons arrow; drag it beside the
 clock if desired. This source update requires a new build/install and is not in
@@ -33,9 +33,10 @@ Preferences are under `%APPDATA%\Kokoro Voice 2.1`; do not share its private tok
 Whisper uses the pinned Hugging Face cache in `%USERPROFILE%\.cache\huggingface`.
 The models remain local after setup.
 
-The locally built installer is
+The previously verified legacy installer is
 `app/src-tauri/target/release/bundle/nsis/Kokoro Voice 2.1_2.1.0-beta.1_x64-setup.exe`.
-It is a local development build, not a signed public Windows release.
+It predates the HereWord name and is a local development build, not a signed
+public Windows release. Current release builds use the HereWord product name.
 
 Local changes fix the Windows uv archive path, reuse an existing Python
 environment during setup, keep desktop Python helpers hidden, display Windows

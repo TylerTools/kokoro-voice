@@ -14,59 +14,39 @@
         display: flex; align-items: center;
         height: calc(100% - 8px); margin: 3px 4px 5px;
         box-sizing: border-box; position: relative; overflow: hidden;
-        background:
-          radial-gradient(120% 90% at 50% -25%, rgba(255,255,255,.24), transparent 58%),
-          linear-gradient(180deg, rgba(47,49,55,.76), rgba(20,21,25,.82));
-        border: 1px solid rgba(255,255,255,.22);
-        border-radius: 21px;
+        background: linear-gradient(145deg, rgba(52, 58, 54, .78), rgba(19, 23, 20, .74));
+        border: 1px solid rgba(255,255,255,.18);
+        border-radius: 17px;
         box-shadow:
-          0 7px 16px rgba(0,0,0,.42),
-          0 2px 4px rgba(0,0,0,.38),
-          inset 0 1px 0 rgba(255,255,255,.30),
-          inset 0 -1px 0 rgba(0,0,0,.40);
-        -webkit-backdrop-filter: blur(28px) saturate(165%);
+          0 10px 28px rgba(0,0,0,.34),
+          inset 0 1px 0 rgba(255,255,255,.12);
+        -webkit-backdrop-filter: saturate(175%) blur(24px);
+        backdrop-filter: saturate(175%) blur(24px);
         font: 15px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-      }
-      #bar::before {
-        content: ""; position: absolute; pointer-events: none; z-index: 2;
-        left: 12px; right: 12px; top: 1px; height: 1px;
-        border-radius: 50%;
-        background: linear-gradient(90deg, transparent, rgba(255,255,255,.58), transparent);
-      }
-      #bar::after {
-        content: ""; position: absolute; pointer-events: none;
-        inset: 0; border-radius: inherit;
-        box-shadow: inset 8px 0 14px rgba(89,184,255,.035), inset -8px 0 14px rgba(255,95,86,.035);
       }
       button {
         flex: 1; height: 100%; border: 0; background: transparent; z-index: 1;
         color: rgba(255,255,255,0.95); font-size: 15px; cursor: pointer;
-        text-shadow: 0 1px 1px rgba(0,0,0,.8);
-        transition: transform 120ms ease, background 120ms ease, color 120ms ease, box-shadow 120ms ease;
+        transition: background 120ms ease, color 120ms ease, transform 120ms ease;
       }
-      button:hover {
-        background: radial-gradient(circle at 50% 15%, rgba(255,255,255,.18), rgba(255,255,255,.045) 70%);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,.16);
-        transform: translateY(-1px);
-      }
-      button:active {
-        background: rgba(0,0,0,.16);
-        box-shadow: inset 0 2px 5px rgba(0,0,0,.48);
-        transform: translateY(1px);
-      }
-      #toggle { border-radius: 20px 0 0 20px; }
-      #stop { border-radius: 0 20px 20px 0; }
-      #toggle { color: #68c2ff; }
+      button:hover { background: rgba(255,255,255,.1); }
+      button:active { background: rgba(0,0,0,.16); transform: scale(.96); }
+      button:focus-visible { outline: 2px solid rgba(119, 211, 199, .72); outline-offset: -3px; }
+      #toggle { border-radius: 16px 0 0 16px; color: #78d2c8; }
+      #stop { border-radius: 0 16px 16px 0; }
       #stop { color: rgba(255,255,255,0.68); font-size: 22px; font-weight: 300; }
-      #stop:hover { color: #ff6b65; }
+      #stop:hover { color: #ff9b95; }
       /* Recording is a distinct state, not a variant of playing: the controls
          do not apply, so they are replaced rather than restyled. */
       #rec { display: none; flex: 1; align-items: center; justify-content: center;
              align-self: stretch; gap: 8px; color: #fff; font-size: 12.5px; z-index: 1;
              text-shadow: 0 1px 1px rgba(0,0,0,.85); }
       body.recording #bar {
-        box-shadow: 0 7px 18px rgba(0,0,0,.44), 0 0 14px rgba(255,95,86,.13),
-                    inset 0 1px 0 rgba(255,255,255,.30), inset 0 -1px 0 rgba(0,0,0,.40);
+        border-color: rgba(255, 112, 102, .48);
+        box-shadow:
+          0 10px 28px rgba(0,0,0,.34),
+          0 0 22px rgba(255, 98, 91, .09),
+          inset 0 1px 0 rgba(255,255,255,.12);
       }
       #rec .mic { width: 17px; height: 17px; color: #ff625b; overflow: visible; }
       #rec .pulse { transform-origin: center; animation: pulse 1.15s ease-out infinite; }
@@ -85,16 +65,15 @@
       body.transcribing #rec .mic { color: #59b8ff; }
       body.transcribing #rec .pulse { display: none; }
       #notice { display: none; flex: 1; min-width: 0; align-items: center;
-                gap: 8px; padding: 0 9px; z-index: 1; color: #fff;
-                font-size: 12.5px; text-shadow: 0 1px 1px rgba(0,0,0,.85); }
+                gap: 9px; padding: 0 12px; z-index: 1; color: #fff;
+                font-size: 13px; line-height: 1.25; }
       #notice .notice-icon { flex: 0 0 auto; width: 18px; height: 18px;
-                             color: #f4b84a; filter: drop-shadow(0 0 5px rgba(244,184,74,.22)); }
-      #notice-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+                             color: #e9b65c; }
+      #notice-label { white-space: normal; overflow-wrap: anywhere; }
       body.notice #toggle, body.notice #sep, body.notice #stop, body.notice #rec { display: none; }
       body.notice #notice { display: flex; }
       body.notice #bar {
-        box-shadow: 0 7px 18px rgba(0,0,0,.44), 0 0 14px rgba(244,184,74,.10),
-                    inset 0 1px 0 rgba(255,255,255,.30), inset 0 -1px 0 rgba(0,0,0,.40);
+        border-color: rgba(233, 182, 92, .48);
       }
       #sep { width: 1px; height: 20px; background: rgba(255,255,255,0.18); }
       /* Drag handles flank the buttons so the panel can be moved without a

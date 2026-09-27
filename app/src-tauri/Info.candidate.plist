@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>HereWord Candidate records your voice so it can be transcribed to text. Audio is processed on this computer and is never uploaded or saved.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>HereWord Candidate types dictated text into the app you are working in, and reads the text you have selected.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>HereWord Candidate captures the area you select so the text in it can be read aloud. The capture is deleted as soon as the text is extracted.</string>
+  </dict>
+</plist>
