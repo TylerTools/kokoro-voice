@@ -35,7 +35,7 @@ class ReleaseManifestTests(unittest.TestCase):
         value = writer.build_manifest(
             platform=platform,
             architecture=architecture,
-            tag="v2.1.1-beta.9",
+            tag="v2.1.1-beta.10",
             revision=revision,
             signing_identity=f"signed-{platform}",
             artifacts=[artifact],
