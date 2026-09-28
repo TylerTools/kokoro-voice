@@ -400,6 +400,9 @@ The Quartz controller requires Input Monitoring to receive key events.
 Accessibility is separately required to read selections and insert dictated
 text. Microphone access is required before dictation may start. The app checks
 all three and must not report runtime readiness while any one is unavailable.
+On macOS 14 and later, recording consent is queried and requested through
+`AVAudioApplication`; macOS 13 uses `AVCaptureDevice`. Neither path captures
+audio while asking for permission.
 
 Developer builds are ad-hoc signed, so their designated requirement is the
 binary CDHash. Replacing the bundle changes that identity and can invalidate
