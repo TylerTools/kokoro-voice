@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # fp16 measured faster than fp32 on this M4 (0.50s vs 0.59s first-chunk) and is
 # 141MB smaller. int8 was benchmarked too and is much SLOWER (1.27s) — ARM lacks
 # good int8 kernels for this graph. Do not "optimize" by switching to int8.
-TTS_MODEL_NAME = os.environ.get("KOKORO_MODEL", "kokoro-v1.0.fp16.onnx")
+TTS_MODEL_NAME = os.environ.get("KOKORO_MODEL", "kokoro-v1.0.fp16-2026-08.onnx")
 TTS_VOICES_NAME = "voices-v1.0.bin"
 
 DEFAULT_VOICE = os.environ.get("KOKORO_VOICE", "af_heart")

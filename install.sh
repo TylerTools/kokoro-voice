@@ -15,7 +15,7 @@ TOKEN_FILE="${CONFIG_DIR}/token"
 PLIST_LABEL="com.tylertools.kokoro-voice"
 PLIST="${HOME}/Library/LaunchAgents/${PLIST_LABEL}.plist"
 PORT="${KOKORO_PORT:-8123}"
-MODEL_BASE="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+MODEL_BASE="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
 
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m !\033[0m %s\n' "$*"; }
@@ -71,7 +71,7 @@ ok "Environment ready ($(du -sh "${HERE}/.venv" | cut -f1))"
 say "Downloading models (~500MB, first run only)"
 mkdir -p "${HERE}/models"
 fetch_model() {
-    local name="$1" expected="$2" path="${HERE}/models/$1"
+    local name="$1" expected="$2" path="${HERE}/models/${3:-$1}"
     if [[ -f "$path" ]]; then
         local actual; actual=$(wc -c <"$path" | tr -d ' ')
         if [[ "$actual" == "$expected" ]]; then ok "$name already present"; return; fi
@@ -82,7 +82,7 @@ fetch_model() {
     [[ "$actual" == "$expected" ]] || die "$name downloaded $actual bytes, expected $expected"
     ok "$name"
 }
-fetch_model "kokoro-v1.0.fp16.onnx" 177464787
+fetch_model "kokoro-v1.0.fp16.onnx" 163527961 "kokoro-v1.0.fp16-2026-08.onnx"
 fetch_model "voices-v1.0.bin"        28214398
 
 # ── 4. auth token ────────────────────────────────────────────────────────────

@@ -141,18 +141,33 @@ class ServiceGuardTests(unittest.TestCase):
         self.assertEqual(server.SpeakRequest(text="hello", speed=2.0).speed, 2.0)
 
     def test_tts_recovers_from_kokoro_token_overflow(self):
+        # 0.5.0 overflowed its style table; 0.6.x rejects the batch instead.
+        overflows = (
+            IndexError("index 510 is out of bounds for axis 0 with size 510"),
+            ValueError("text is too long, must be less than 510 phonemes"),
+        )
+        for overflow in overflows:
+            class FakeKokoro:
+                def create(self, text, **_kwargs):
+                    if len(text) > 40:
+                        raise overflow
+                    return np.ones(len(text), dtype="float32"), 24000
+
+            text = "This deliberately long sentence exercises recursive splitting without losing words."
+            with self.subTest(error=type(overflow).__name__):
+                audio, rate = tts_engine._create_tts(
+                    FakeKokoro(), text, "voice", 1.0, "en-us"
+                )
+                self.assertEqual(rate, 24000)
+                self.assertGreater(len(audio), 0)
+
+    def test_tts_does_not_split_unrelated_value_errors(self):
         class FakeKokoro:
             def create(self, text, **_kwargs):
-                if len(text) > 40:
-                    raise IndexError("index 510 is out of bounds for axis 0 with size 510")
-                return np.ones(len(text), dtype="float32"), 24000
+                raise ValueError("Voice nobody not found in available voices")
 
-        text = "This deliberately long sentence exercises recursive splitting without losing words."
-        audio, rate = tts_engine._create_tts(
-            FakeKokoro(), text, "voice", 1.0, "en-us"
-        )
-        self.assertEqual(rate, 24000)
-        self.assertGreater(len(audio), 0)
+        with self.assertRaises(ValueError):
+            tts_engine._create_tts(FakeKokoro(), "hello there", "nobody", 1.0, "en-us")
 
     def test_transcription_is_delegated_and_reports_cold_start(self):
         class FakeWorker:
