@@ -71,6 +71,12 @@ impl Preferences {
             .unwrap_or(false);
         object.insert("live_preview".into(), Value::Bool(live_preview));
 
+        let pause_other_media = object
+            .get("pause_other_media")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        object.insert("pause_other_media".into(), Value::Bool(pause_other_media));
+
         if object
             .get("microphone_device")
             .is_some_and(|value| !value.is_null() && !value.is_string())
@@ -106,6 +112,12 @@ impl Preferences {
 
     pub fn live_preview(&self) -> bool {
         self.document["live_preview"].as_bool().unwrap_or(false)
+    }
+
+    pub fn pause_other_media(&self) -> bool {
+        self.document["pause_other_media"]
+            .as_bool()
+            .unwrap_or(false)
     }
 
     pub fn microphone_device(&self) -> Option<&str> {
@@ -192,6 +204,18 @@ mod tests {
         }));
         assert_eq!(preferences.as_value()["hk_read"], "Control+Alt+KeyU");
         assert_eq!(preferences.as_value()["future_setting"]["enabled"], true);
+    }
+
+    #[test]
+    fn media_interruption_requires_an_explicit_boolean_opt_in() {
+        assert!(!Preferences::default().pause_other_media());
+        assert!(
+            !Preferences::from_value(serde_json::json!({"pause_other_media": "true"}))
+                .pause_other_media()
+        );
+        let mut preferences = Preferences::default();
+        preferences.set("pause_other_media", Value::Bool(true));
+        assert!(Preferences::from_value(preferences.into_value()).pause_other_media());
     }
 
     #[test]

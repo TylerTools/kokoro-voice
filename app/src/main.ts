@@ -416,7 +416,7 @@ listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
 const SPEEDS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 
 async function initPrefs() {
-  const prefs = await invoke<{ voice: string; speed: number; cue_enabled?: boolean; cue_volume?: number; live_preview?: boolean }>("get_prefs");
+  const prefs = await invoke<{ voice: string; speed: number; cue_enabled?: boolean; cue_volume?: number; live_preview?: boolean; pause_other_media?: boolean }>("get_prefs");
 
   const cueEnabled = document.getElementById("cue-enabled") as HTMLInputElement;
   const cueVolume = document.getElementById("cue-volume") as HTMLInputElement;
@@ -440,6 +440,19 @@ async function initPrefs() {
   livePreview.checked = prefs.live_preview !== false;
   livePreview.onchange = () => {
     void invoke("set_prefs", { livePreview: livePreview.checked });
+  };
+  const pauseOtherMedia = document.getElementById("pause-other-media") as HTMLInputElement;
+  pauseOtherMedia.checked = prefs.pause_other_media === true;
+  pauseOtherMedia.onchange = async () => {
+    pauseOtherMedia.disabled = true;
+    try {
+      await invoke("set_prefs", { pauseOtherMedia: pauseOtherMedia.checked });
+    } catch {
+      pauseOtherMedia.checked = !pauseOtherMedia.checked;
+      detail.textContent = "Couldn’t save the media setting. Try again.";
+    } finally {
+      pauseOtherMedia.disabled = false;
+    }
   };
   const launchAtLogin = document.getElementById("launch-at-login") as HTMLInputElement;
   launchAtLogin.checked = await invoke<boolean>("launch_at_login_status");

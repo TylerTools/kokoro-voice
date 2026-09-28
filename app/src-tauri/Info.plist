@@ -15,6 +15,9 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>HereWord records your voice so it can be transcribed to text. Audio is processed on this computer and is never uploaded or saved.</string>
 
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>HereWord temporarily silences other apps while recording or reading aloud. Other apps' audio is never saved or uploaded.</string>
+
     <!-- Typing a transcript into the focused app, and reading your selection,
          both go through System Events. -->
     <key>NSAppleEventsUsageDescription</key>

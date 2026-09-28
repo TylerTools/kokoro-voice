@@ -12,6 +12,12 @@
 mod chords;
 mod dictation_protocol;
 mod hotkeys;
+mod media_focus;
+
+#[cfg(target_os = "windows")]
+pub fn run_audio_quiet_worker(root: u32) {
+    media_focus::run_quiet_worker(root);
+}
 #[cfg(target_os = "macos")]
 mod microphone_permission;
 mod playback;
@@ -590,12 +596,16 @@ fn set_prefs(
     cue_enabled: Option<bool>,
     cue_volume: Option<f64>,
     live_preview: Option<bool>,
-) -> serde_json::Value {
+    pause_other_media: Option<bool>,
+) -> Result<serde_json::Value, String> {
     let mut preferences = preferences::Preferences::load(&prefs_file());
     preferences.set_general(voice, speed, cue_enabled, cue_volume, live_preview);
+    if let Some(enabled) = pause_other_media {
+        preferences.set("pause_other_media", serde_json::Value::Bool(enabled));
+    }
     let value = preferences.into_value();
-    let _ = write_json_atomic(&prefs_file(), &value);
-    value
+    write_json_atomic(&prefs_file(), &value)?;
+    Ok(value)
 }
 
 #[tauri::command]
@@ -1463,6 +1473,7 @@ fn run_client_monitored(
     let script = script.to_string();
     let app2 = app.clone();
     std::thread::spawn(move || {
+        let media_lease = acquire_media_focus(&app2);
         if let Some(manager) = app2.try_state::<playback::PlaybackManager>() {
             let _ = manager.stop();
         }
@@ -1505,6 +1516,8 @@ fn run_client_monitored(
             }
             Err(error) => (None, Err(error.to_string())),
         };
+        // Audio has ended even if a notice remains visible afterwards.
+        drop(media_lease);
         let notice = match output {
             Ok(result) => String::from_utf8_lossy(&result.stdout)
                 .lines()
@@ -2002,6 +2015,7 @@ fn dictation_start(app: &AppHandle) {
         // second later, after Whisper has finished. The player therefore sat on
         // "Listening…" with the mic already closed, which reads as stuck on and
         // as though it were still recording you.
+        let mut media_lease = acquire_media_focus(&app2);
         let mut recorder = client_command(&paths, "dictate.py");
         recorder
             .arg("--record")
@@ -2107,6 +2121,7 @@ fn dictation_start(app: &AppHandle) {
                     match dictation_protocol::parse(&line) {
                         Event::Transcribing(_) => {
                             // Mic is closed; say so immediately.
+                            drop(media_lease.take());
                             accepting_preview = false;
                             show_player(&app2);
                             set_player_mode(&app2, "transcribing");
@@ -2316,6 +2331,8 @@ fn dictation_start(app: &AppHandle) {
         }
 
         hide_player(&app2);
+        // Also release on cancellation, startup failure, or protocol/child exit.
+        drop(media_lease);
         if ducked {
             if let Some(manager) = app2.try_state::<playback::PlaybackManager>() {
                 let _ = manager.resume();
@@ -2393,6 +2410,14 @@ fn stop_managed_playback(app: &AppHandle) {
     if let Some(manager) = app.try_state::<playback::PlaybackManager>() {
         let _ = manager.stop();
     }
+    if let Some(focus) = app.try_state::<Arc<media_focus::MediaFocus>>() {
+        focus.shutdown();
+    }
+}
+
+fn acquire_media_focus(app: &AppHandle) -> Option<media_focus::Lease> {
+    app.try_state::<Arc<media_focus::MediaFocus>>()?
+        .acquire(preferences::Preferences::load(&prefs_file()).pause_other_media())
 }
 
 fn stop_managed_dictation(app: &AppHandle) {
@@ -3135,6 +3160,7 @@ pub fn run() {
             app.manage(Engine(Mutex::new(None)));
             app.manage(Dictation(Mutex::new(None)));
             app.manage(playback::PlaybackManager::default());
+            app.manage(media_focus::MediaFocus::new());
             // HereWord is an accessibility tool whose hotkeys must be available
             // immediately after login. Default autostart on and self-heal a
             // missing LaunchAgent unless the user explicitly disabled it.

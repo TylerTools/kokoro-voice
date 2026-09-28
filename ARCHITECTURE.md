@@ -137,6 +137,45 @@ panel's Space assignment and can flood the event log without restoring UI.
 
 The producer and player share stop state. Stopping only the current audio
 process is incorrect because a later synthesized chunk would restart playback.
+
+### External media interruption
+
+The opt-in **Quiet other audio while recording or speaking** preference is
+decoded by `preferences.rs`. `media_focus.rs` owns shared interruption leases:
+Read, Snip speech, and voice preview hold a lease until their speech child
+exits; Dictate acquires before microphone startup and releases at TRANSCRIBING
+(microphone closed), or on cancellation, startup failure, and child exit.
+Overlapping actions restore media only after the last lease ends. A speech
+session paused in HereWord retains its lease until stopped or completed.
+Graceful quit and the signal shutdown path restore owned paused media once.
+
+Platform adapters stay under `media_focus/`. macOS uses its active Now Playing
+player through the system JXA host and MediaRemote; Windows enumerates sessions
+published through System Media Transport Controls. Unsupported sound sources
+cannot be paused. macOS pauses its active Now Playing player. A private muted
+Core Audio process tap (macOS 14.2+) quiets other audio sources; the tap excludes
+HereWord and its descendant clients, refreshes the process list during a lease,
+and is destroyed before paused media resumes. Audio is never read, stored, or
+forwarded. Newly started sources join the quieting on the next observation.
+Unsupported media silenced by the tap continues advancing. No master-volume
+changes, drivers, or new runtime downloads are involved. System audio permission
+can be required, and OS failures are logged by numeric status without metadata.
+Windows uses temporary WASAPI session mutes across active output devices,
+excluding HereWord's process tree and preserving prior mutes and observed manual
+unmutes. Exclusive-mode or driver-bypassing audio may not expose a controllable
+session. All quieting shares the same overlap and shutdown lease lifecycle.
+Windows session mutes are owned by a passive helper mode of the same executable,
+which registers no UI, engine, or input controller. Its parent pipe closes on
+graceful shutdown or a crash; EOF restores owned mutes before the helper exits.
+
+Only playing media is paused; explicit play/pause commands avoid toggle races.
+The adapters check player, track, and playback state before every command and
+the host observes changes during interruption. An observed manual resume,
+player/track switch, disappearance, or failed query revokes resume ownership.
+Already-paused media is never started. Playback changes between observations
+cannot always be detected; private macOS APIs may stop working after OS updates.
+Media identity/metadata remains in memory and is never logged or persisted.
+
 The transport is deliberately plain and compact. Action notices use a wider,
 taller two-line surface; they must never inherit the transport's one-line
 ellipsis because the recovery action is the reason the notice exists.

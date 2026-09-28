@@ -32,7 +32,7 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
       snip: "Control+Alt+Command+KeyP",
     };
     if (deniedPermission && selectedPlatform === "macos") permissions[deniedPermission] = "required";
-    const state = { permissions, registered: initialRegistered, checksFail: false };
+    const state = { permissions, registered: initialRegistered, checksFail: false, pauseOtherMedia: false, prefsFail: false };
     const shortcutReport = () => ({
       ...hotkeys,
       bindings: Object.fromEntries(Object.entries(hotkeys).map(([slot, label]) => [
@@ -95,7 +95,12 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
                 cue_enabled: true,
                 cue_volume: 0.22,
                 live_preview: true,
+                pause_other_media: state.pauseOtherMedia,
               };
+            case "set_prefs":
+              if (state.prefsFail) throw new Error("Could not save preferences");
+              if (args && "pauseOtherMedia" in args) state.pauseOtherMedia = Boolean(args.pauseOtherMedia);
+              return null;
             case "launch_at_login_status":
               return true;
             case "microphone_devices":
@@ -127,6 +132,13 @@ for (const platform of ["macos", "windows"] as const) {
     await expect(page.locator("body")).toHaveAttribute("data-platform", platform);
     await expect(page.locator("#app-version")).toContainText("2.1.1-beta.9 · 01234567");
     await expect(page.locator("#setup")).toBeHidden();
+    await expect(page.locator("#pause-other-media")).not.toBeChecked();
+    await page.locator("#pause-other-media").check();
+    expect(await page.evaluate(() => (window as unknown as { __setupTest: { pauseOtherMedia: boolean } }).__setupTest.pauseOtherMedia)).toBe(true);
+    await page.evaluate(() => { (window as unknown as { __setupTest: { prefsFail: boolean } }).__setupTest.prefsFail = true; });
+    await page.locator("#pause-other-media").click();
+    await expect(page.locator("#pause-other-media")).toBeChecked();
+    await expect(page.locator("#detail")).toContainText("Couldn’t save the media setting");
     await expect(page.locator("#key-read")).toHaveText(
       platform === "macos" ? "⌃⌥⌘U" : "Ctrl+Alt+Win+U",
     );
