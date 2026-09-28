@@ -2,7 +2,7 @@
 # requirements-<platform>.txt files alongside this one.
 fastapi==0.141.1
 uvicorn[standard]==0.52.1
-kokoro-onnx==0.5.0
+kokoro-onnx==0.6.1
 soundfile==0.14.0
 numpy==2.4.6
 

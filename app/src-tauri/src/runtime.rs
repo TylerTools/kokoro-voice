@@ -47,6 +47,14 @@ pub(crate) fn engine_root() -> std::path::PathBuf {
         .join("engine")
 }
 
+/// Local name of the Kokoro v1.0 fp16 export from upstream `model-files-v1.1`.
+/// Upstream reuses the name `kokoro-v1.0.fp16.onnx` for every re-export, so the
+/// local name carries the export. Changing it makes older installs report
+/// not-installed, which re-runs setup and rebuilds the locked environment with
+/// the model; `tts_engine.py` and `server.py` default to the same name.
+pub(crate) const KOKORO_MODEL_FILE: &str = "kokoro-v1.0.fp16-2026-08.onnx";
+pub(crate) const KOKORO_VOICES_FILE: &str = "voices-v1.0.bin";
+
 pub(crate) fn stt_cache_home(root: &std::path::Path) -> std::path::PathBuf {
     root.join("models").join("huggingface")
 }
@@ -374,9 +382,10 @@ pub(crate) fn port() -> String {
 
 pub(crate) fn is_installed() -> bool {
     let root = engine_root();
+    let models = root.join("models");
     python_path(&root).exists()
-        && root.join("models/kokoro-v1.0.fp16.onnx").exists()
-        && root.join("models/voices-v1.0.bin").exists()
+        && models.join(KOKORO_MODEL_FILE).exists()
+        && models.join(KOKORO_VOICES_FILE).exists()
 }
 
 pub(crate) fn active_source_file(root: &std::path::Path) -> std::path::PathBuf {

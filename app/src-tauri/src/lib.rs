@@ -45,7 +45,8 @@ use runtime::active_source_root;
 use runtime::{
     active_source_file, client_command, config_dir, engine_root, ensure_auth_token, is_installed,
     legacy_config_dir, local_json, python_path, replace_file, spawn_engine_and_record,
-    start_watchdog, stop_engine, structured_log, Engine, Paths, QUITTING,
+    start_watchdog, stop_engine, structured_log, Engine, Paths, KOKORO_MODEL_FILE,
+    KOKORO_VOICES_FILE, QUITTING,
 };
 use tauri::{
     menu::{Menu, MenuItem},
@@ -430,9 +431,12 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
     emit_step(app, 15, "Setting up Python…");
     let uv = find_or_install_uv(app)?;
 
-    // 3. Environment.
+    // 3. Environment. Setup only runs while the engine is not installed, so no
+    //    engine holds this environment. uv refuses to reuse an existing one, and
+    //    `--no-deps` below would never remove a package a newer lock dropped, so
+    //    rebuild it from the lock every time.
     let venv_ok = Command::new(&uv)
-        .args(["venv", "--python", "3.12"])
+        .args(["venv", "--clear", "--python", "3.12"])
         .arg(root.join(".venv"))
         .status()
         .map_err(|e| format!("uv venv: {e}"))?;
@@ -460,16 +464,20 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
     // 4. Models — not redistributed, fetched from upstream. Sizes are verified
     //    because a truncated download fails much later and far less obviously.
     std::fs::create_dir_all(root.join("models")).ok();
-    let base = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0";
-    for (name, expected, sha256, pct) in [
+    // The superseded model-files-v1.0 export; nothing loads it after this run.
+    let _ = std::fs::remove_file(root.join("models/kokoro-v1.0.fp16.onnx"));
+    let base = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1";
+    for (upstream, name, expected, sha256, pct) in [
         (
             "kokoro-v1.0.fp16.onnx",
-            177_464_787u64,
-            "c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204",
+            KOKORO_MODEL_FILE,
+            163_527_961u64,
+            "f3a290d384fbb27966d462905c71a46cef9e5fd00516b40df32a0b4afe77ac96",
             55u32,
         ),
         (
-            "voices-v1.0.bin",
+            KOKORO_VOICES_FILE,
+            KOKORO_VOICES_FILE,
             28_214_398u64,
             "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
             80u32,
@@ -483,7 +491,7 @@ fn setup_engine_inner(app: &AppHandle) -> Result<String, String> {
             let _ = std::fs::remove_file(&dest);
         }
         emit_step(app, pct, &format!("Downloading voices ({name})…"));
-        download_verified(&format!("{base}/{name}"), &dest, Some(expected), sha256)?;
+        download_verified(&format!("{base}/{upstream}"), &dest, Some(expected), sha256)?;
     }
 
     // Prime the platform STT model while networking is deliberately available.

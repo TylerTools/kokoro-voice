@@ -61,7 +61,7 @@ jobs:
           fi
           uv venv --python 3.12
           uv pip install --dry-run --require-hashes --no-deps --python-platform "$platform" -r "$lock"
-      - run: uv run --python 3.12 --with fastapi==0.140.0 --with kokoro-onnx==0.5.0 --with numpy==2.4.6 --with soundfile==0.14.0 python -m unittest discover -s tests -v
+      - run: uv run --python 3.12 --with fastapi==0.140.0 --with kokoro-onnx==0.6.1 --with numpy==2.4.6 --with soundfile==0.14.0 python -m unittest discover -s tests -v
       - run: uv run --python 3.12 python -m py_compile server.py client/dictate.py client/speak.py client/snip.py
       - name: Reject sensitive diagnostic fields
         shell: bash

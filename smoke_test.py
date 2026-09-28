@@ -12,7 +12,7 @@ import soundfile as sf
 from kokoro_onnx import Kokoro
 
 
-MODEL = os.path.join("models", os.environ.get("KOKORO_MODEL", "kokoro-v1.0.fp16.onnx"))
+MODEL = os.path.join("models", os.environ.get("KOKORO_MODEL", "kokoro-v1.0.fp16-2026-08.onnx"))
 VOICES = os.path.join("models", "voices-v1.0.bin")
 
 
