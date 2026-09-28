@@ -277,6 +277,14 @@ unresolved, detects each grant, advances to Input Monitoring, and registers
 shortcuts when all grants are available. The in-progress marker lives in the
 settings webview's local storage so a macOS-required **Quit & Reopen** resumes
 the same transaction.
+The header reports **Setup incomplete** even when the speech engine is healthy
+until permissions and all three shortcut registrations pass System Check.
+Permission recovery appears only for a denied macOS Accessibility or Input
+Monitoring step: users can refresh the switch, use **Quit & Reopen**, or replace
+a stale Settings entry with the installed `/Applications/HereWord.app`. The
+app cannot infer whether a Settings switch is on from a denied native permission
+check, so this guidance is conditional and never reports a grant from a prompt.
+Setup resumes after reopening and verifies the new process before showing Ready.
 Screen Recording remains a just-in-time approval. Microphone authorization is
 an explicit setup and release gate because macOS can return silent audio before
 the user has answered its permission prompt.

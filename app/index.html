@@ -34,6 +34,16 @@
       </ol>
       <div class="bar" hidden id="bar-wrap"><div class="bar-fill" id="bar"></div></div>
       <p class="setup-msg" id="setup-msg" aria-live="polite"></p>
+      <details id="setup-recovery" hidden>
+        <summary>Already enabled in Settings?</summary>
+        <p>macOS can keep an older approval after an app update. If HereWord is already enabled in <strong id="setup-recovery-pane"></strong> but setup still asks for approval:</p>
+        <ol>
+          <li>Switch HereWord off and back on. Choose <strong>Quit &amp; Reopen</strong> if macOS asks.</li>
+          <li>If setup still cannot confirm access, select HereWord in that permission list and remove it with the minus button. Use the plus button to add <strong>/Applications/HereWord.app</strong>, then enable it again.</li>
+          <li>Quit and reopen HereWord. Setup resumes and verifies permissions and shortcut registration before showing Ready.</li>
+        </ol>
+        <p>Use the installed app in Applications. Eject any old installer disk image so you do not approve its copy by mistake.</p>
+      </details>
       <button id="setup-go">Finish setup</button>
       <button class="ghost" id="setup-cancel" hidden>Cancel</button>
     </section>
