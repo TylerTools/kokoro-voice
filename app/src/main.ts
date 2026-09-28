@@ -12,6 +12,10 @@ import { listen } from "@tauri-apps/api/event";
 import {
   nextSetupStep,
   permissionReady,
+  permissionRecoveryStep,
+  readinessStatus,
+  shortcutsRegistered,
+  type EngineHealth,
   type PermissionState,
   type SetupReport,
   type SetupStep,
@@ -24,13 +28,8 @@ import {
   type AppInfo,
 } from "./platform_ui";
 
-type Health = {
-  status: string;
-  voices?: number;
-  stt_ready?: boolean;
-  stt_warm?: boolean;
-  auth_required?: boolean;
-};
+type Health = EngineHealth;
+let lastHealth: Health = { status: "starting" };
 
 type HotkeySlot = "read" | "dictate" | "snip";
 
@@ -54,6 +53,7 @@ function isHotkeySlot(value: string | undefined): value is HotkeySlot {
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
 const detail = document.getElementById("detail") as HTMLSpanElement;
+const SHORTCUT_SETUP_MESSAGE = "Finish setup to enable shortcuts. HereWord checks approvals automatically.";
 let currentAppInfo: AppInfo = {
   app_version: "",
   build_revision: "development",
@@ -85,35 +85,16 @@ async function refresh(): Promise<void> {
     h = { status: "down" };
   }
 
+  lastHealth = h;
+  renderReadiness();
+}
+
+function renderReadiness(): void {
+  const status = readinessStatus(lastHealth, setupReport);
   statusEl.classList.remove("status--ok", "status--warn", "status--down", "status--unknown");
-
-  // Not installed is a first-run state, not a failure — show setup, not an error.
-  if (h.status === "not-installed") {
-    statusEl.classList.add("status--warn");
-    statusText.textContent = "Setup needed";
-    statusEl.title = "Finish setup to enable HereWord.";
-    return;
-  }
-
-  if (h.status === "ok" && h.stt_ready) {
-    statusEl.classList.add("status--ok");
-    statusText.textContent = "Ready";
-    statusEl.title = h.stt_warm
-      ? `${h.voices ?? 0} voices · speech recognition ready`
-      : `${h.voices ?? 0} voices · speech recognition ready on demand`;
-  } else if (h.status === "ok") {
-    statusEl.classList.add("status--warn");
-    statusText.textContent = "Dictation retrying";
-    statusEl.title = "Reading works. Dictation will retry when used.";
-  } else if (h.status === "starting") {
-    statusEl.classList.add("status--warn");
-    statusText.textContent = "Starting…";
-    statusEl.title = "Loading local voices.";
-  } else {
-    statusEl.classList.add("status--down");
-    statusText.textContent = "Not running";
-    statusEl.title = "Quit and reopen HereWord.";
-  }
+  statusEl.classList.add(`status--${status.level}`);
+  statusText.textContent = status.label;
+  statusEl.title = status.title;
 }
 
 // Buttons declare which Rust command they call, so adding one is a markup
@@ -205,7 +186,13 @@ function renderPermissionRow(id: string, state: PermissionState | undefined): vo
 function renderSetup(report: SetupReport): SetupStep {
   renderAppIdentity(report.app);
   const step = nextSetupStep(report);
-  const engineReady = report.offline_ready && report.engine.status === "ok";
+  renderReadiness();
+  const recovery = document.getElementById("setup-recovery") as HTMLDetailsElement;
+  const recoveryPane = permissionRecoveryStep(report);
+  recovery.hidden = recoveryPane === null;
+  const recoveryLabel = document.getElementById("setup-recovery-pane");
+  if (recoveryLabel) recoveryLabel.textContent = recoveryPane ?? "";
+  const engineReady = report.offline_ready && report.engine.status === "ok" && report.engine.tts_ready !== false;
   const engineState = document.getElementById("setup-state-engine") as HTMLElement;
   engineState.textContent = engineReady ? "Ready" : report.offline_ready ? "Starting…" : "Not installed";
   engineState.classList.toggle("setup-state--ready", engineReady);
@@ -213,6 +200,12 @@ function renderSetup(report: SetupReport): SetupStep {
   renderPermissionState("setup-state-microphone", report.permissions.microphone);
   renderPermissionState("setup-state-accessibility", report.permissions.accessibility);
   renderPermissionState("setup-state-input", report.permissions.input_monitoring);
+  if (permissionReady(report.permissions.input_monitoring) && !shortcutsRegistered(report)) {
+    const inputState = document.getElementById("setup-state-input") as HTMLElement;
+    inputState.textContent = "Not registered";
+    inputState.classList.remove("setup-state--ready");
+    inputState.classList.add("setup-state--needed");
+  }
   renderPermissionRow("setup-row-microphone", report.permissions.microphone);
   renderPermissionRow("setup-row-accessibility", report.permissions.accessibility);
   renderPermissionRow("setup-row-input", report.permissions.input_monitoring);
@@ -226,6 +219,7 @@ function renderSetup(report: SetupReport): SetupStep {
     microphone: "Allow Microphone",
     accessibility: "Continue in Accessibility",
     "input-monitoring": "Continue in Input Monitoring",
+    shortcuts: "Check shortcuts",
     complete: "Setup complete",
   };
   setupButton.textContent = labels[step];
@@ -234,6 +228,9 @@ function renderSetup(report: SetupReport): SetupStep {
     setupMessage.textContent = "";
   } else if (!guidedSetupActive && !setupEffectInFlight) {
     setupMessage.textContent = "HereWord continues as soon as each approval is on.";
+  }
+  if (step === "shortcuts") {
+    setupMessage.textContent = "Permissions are approved. HereWord is checking shortcuts. If this continues, quit and reopen HereWord; setup will resume and check again.";
   }
   return step;
 }
@@ -264,7 +261,7 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
         window.setTimeout(() => { void refreshSetup(true); }, 0);
       }
     } else if (step === "input-monitoring") {
-      setupMessage.textContent = "Turn on HereWord in Input Monitoring. HereWord will finish when macOS confirms it.";
+      setupMessage.textContent = "Turn on HereWord in Input Monitoring, then choose Quit & Reopen if macOS asks. Setup resumes and checks the new process automatically.";
       const result = await invoke<{ available?: boolean }>("retry_permission", { capability: "input-monitoring" });
       if (!result.available) {
         await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
@@ -289,13 +286,18 @@ async function refreshSetup(advance = guidedSetupActive): Promise<void> {
     setupReport = await invoke<SetupReport>("system_check");
     const wasGuided = guidedSetupActive;
     const step = renderSetup(setupReport);
-    if (step === "complete" && wasGuided) {
+    if (step === "complete" && (wasGuided || detail.textContent === SHORTCUT_SETUP_MESSAGE)) {
       detail.textContent = "Setup complete.";
     } else if (advance) {
       await advanceGuidedSetup(setupReport);
     }
   } catch (error) {
+    setupReport = null;
+    renderReadiness();
     setupCard.hidden = false;
+    setupButton.hidden = false;
+    setupButton.disabled = false;
+    setupButton.textContent = "Check setup";
     setupMessage.textContent = `HereWord could not verify setup: ${error}`;
   } finally {
     setupRefreshInFlight = false;
@@ -389,7 +391,7 @@ async function refreshHotkeys(): Promise<void> {
     btn.hidden = binding ? !binding.configurable : false;
   });
   if (Object.values(hk.bindings).some((binding) => !binding.registered)) {
-    detail.textContent = "Shortcuts need setup. Use Finish setup above; HereWord will detect the approvals.";
+    detail.textContent = SHORTCUT_SETUP_MESSAGE;
   }
 }
 

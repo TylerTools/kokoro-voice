@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextSetupStep, permissionReady, type SetupReport } from "./setup_flow";
+import { nextSetupStep, permissionReady, permissionRecoveryStep, readinessStatus, type SetupReport } from "./setup_flow";
 
 const base: SetupReport = {
   app: {
@@ -10,6 +10,7 @@ const base: SetupReport = {
     paste_shortcut: "Ctrl+V",
   },
   engine: { status: "ok" },
+  hotkeys: { bindings: { read: { registered: true }, dictate: { registered: true }, snip: { registered: true } } },
   permissions: {
     microphone: "checked-on-use",
     accessibility: "not-required",
@@ -37,5 +38,31 @@ describe("setup flow", () => {
   it("keeps model installation ahead of permission work", () => {
     expect(nextSetupStep({ ...base, offline_ready: false })).toBe("download");
   });
-});
 
+  it("requires registration of every action after permissions pass", () => {
+    const report = { ...base, hotkeys: { bindings: { ...base.hotkeys.bindings, snip: { registered: false } } } };
+    expect(nextSetupStep(report)).toBe("shortcuts");
+    expect(readinessStatus({ status: "ok", stt_ready: true }, report).label).toBe("Setup incomplete");
+  });
+
+  it("does not claim readiness from engine health before system check", () => {
+    expect(readinessStatus({ status: "ok", stt_ready: true }, null).label).toBe("Checking setup…");
+  });
+
+  it("keeps an unready speech engine in setup", () => {
+    expect(nextSetupStep({ ...base, engine: { status: "ok", tts_ready: false } })).toBe("engine-starting");
+  });
+
+  it("shows macOS recovery for the currently denied permission only", () => {
+    const mac = { ...base, app: { ...base.app, platform: "macos" as const }, permissions: { ...base.permissions, accessibility: "required" as const, input_monitoring: "required" as const } };
+    expect(permissionRecoveryStep(mac)).toBe("Accessibility");
+    expect(readinessStatus({ status: "ok", stt_ready: true }, mac).label).toBe("Setup incomplete");
+    expect(permissionRecoveryStep({ ...mac, permissions: { ...mac.permissions, accessibility: "available" } })).toBe("Input Monitoring");
+    expect(permissionRecoveryStep(base)).toBeNull();
+  });
+
+  it("reports Ready only after setup completes while cold dictation remains available", () => {
+    expect(readinessStatus({ status: "ok", stt_ready: true, stt_warm: false }, base).label).toBe("Ready");
+    expect(readinessStatus({ status: "ok", stt_ready: false }, base).label).toBe("Dictation retrying");
+  });
+});

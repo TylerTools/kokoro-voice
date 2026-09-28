@@ -2,8 +2,8 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 type Platform = "macos" | "windows";
 
-async function installTauriMock(page: Page, platform: Platform): Promise<void> {
-  await page.addInitScript((selectedPlatform) => {
+async function installTauriMock(page: Page, platform: Platform, denied?: "accessibility" | "input_monitoring", registered = true): Promise<void> {
+  await page.addInitScript(({ selectedPlatform, deniedPermission, initialRegistered }) => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
     let callbackId = 1;
     const app = {
@@ -31,8 +31,17 @@ async function installTauriMock(page: Page, platform: Platform): Promise<void> {
       dictate: "Control+Alt+Command+KeyI",
       snip: "Control+Alt+Command+KeyP",
     };
+    if (deniedPermission && selectedPlatform === "macos") permissions[deniedPermission] = "required";
+    const state = { permissions, registered: initialRegistered, checksFail: false };
+    const shortcutReport = () => ({
+      ...hotkeys,
+      bindings: Object.fromEntries(Object.entries(hotkeys).map(([slot, label]) => [
+        slot, { label, registered: state.registered, configurable: true },
+      ])),
+    });
 
     Object.assign(window, {
+      __setupTest: state,
       __TAURI_INTERNALS__: {
         callbacks,
         transformCallback(callback: (...args: unknown[]) => void) {
@@ -49,32 +58,29 @@ async function installTauriMock(page: Page, platform: Platform): Promise<void> {
         convertFileSrc(path: string) {
           return path;
         },
-        async invoke(command: string) {
+        async invoke(command: string, args?: { capability?: string }) {
           if (command.startsWith("plugin:event|")) return 1;
           if (command.startsWith("plugin:opener|")) return null;
           switch (command) {
             case "engine_status":
               return { status: "ok", voices: 54, stt_ready: true, stt_warm: false };
             case "system_check":
+              if (state.checksFail) throw new Error("System check unavailable");
               return {
                 app,
                 engine: { status: "ok" },
                 permissions,
-                hotkeys,
+                hotkeys: shortcutReport(),
                 microphones: [],
                 setup: { stage: "complete" },
                 offline_ready: true,
               };
             case "hotkeys":
-              return {
-                ...hotkeys,
-                bindings: Object.fromEntries(
-                  Object.entries(hotkeys).map(([slot, label]) => [
-                    slot,
-                    { label, registered: true, configurable: true },
-                  ]),
-                ),
-              };
+              return shortcutReport();
+            case "retry_permission":
+              return { available: args?.capability === "input-monitoring"
+                ? permissions.input_monitoring === "available"
+                : args?.capability === "accessibility" ? permissions.accessibility === "available" : true };
             case "storage_status":
               return {
                 engine_bytes: 0,
@@ -104,7 +110,7 @@ async function installTauriMock(page: Page, platform: Platform): Promise<void> {
         },
       },
     });
-  }, platform);
+  }, { selectedPlatform: platform, deniedPermission: denied, initialRegistered: registered });
 }
 
 async function capture(page: Page, testInfo: TestInfo, name: string): Promise<void> {
@@ -131,6 +137,63 @@ for (const platform of ["macos", "windows"] as const) {
     await capture(page, testInfo, `settings-${platform}`);
   });
 }
+
+for (const denied of ["accessibility", "input_monitoring"] as const) {
+  test(`permission recovery survives reopen — ${denied}`, async ({ page }) => {
+    await installTauriMock(page, "macos", denied, false);
+    await page.goto("/");
+    await expect(page.locator("#status-text")).toHaveText("Setup incomplete");
+    await page.locator("#setup-recovery summary").click();
+    await expect(page.locator("#setup-recovery")).toContainText("/Applications/HereWord.app");
+    await expect(page.locator("#setup-recovery")).toContainText("Quit & Reopen");
+    await page.locator("#setup-go").click();
+    await page.reload();
+    await expect(page.locator("#setup")).toBeVisible();
+    await expect(page.locator("#status-text")).toHaveText("Setup incomplete");
+    await page.evaluate(() => {
+      const state = (window as unknown as { __setupTest: { permissions: Record<string, string>; registered: boolean } }).__setupTest;
+      state.permissions.accessibility = "available";
+      state.permissions.input_monitoring = "available";
+      state.registered = true;
+      window.dispatchEvent(new Event("focus"));
+    });
+    await expect(page.locator("#setup")).toBeHidden();
+    await expect(page.locator("#status-text")).toHaveText("Ready");
+    await expect(page.locator("#setup-recovery")).toBeHidden();
+    expect(await page.evaluate(() => localStorage.getItem("kokoro-guided-setup-active"))).toBeNull();
+  });
+}
+
+test("approved permissions still require shortcut registration", async ({ page }) => {
+  await installTauriMock(page, "macos", undefined, false);
+  await page.goto("/");
+  await expect(page.locator("#status-text")).toHaveText("Setup incomplete");
+  await expect(page.locator("#setup-go")).toHaveText("Check shortcuts");
+  await expect(page.locator("#setup-state-input")).toHaveText("Not registered");
+  await expect(page.locator("#setup-recovery")).toBeHidden();
+  await page.waitForTimeout(4200);
+  await expect(page.locator("#status-text")).toHaveText("Setup incomplete");
+  await page.evaluate(() => {
+    (window as unknown as { __setupTest: { registered: boolean } }).__setupTest.registered = true;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(page.locator("#status-text")).toHaveText("Ready");
+  await expect(page.locator("#setup")).toBeHidden();
+  await expect(page.locator("#detail")).toHaveText("Setup complete.");
+});
+
+test("failed system check clears stale Ready status", async ({ page }) => {
+  await installTauriMock(page, "macos");
+  await page.goto("/");
+  await expect(page.locator("#status-text")).toHaveText("Ready");
+  await page.evaluate(() => {
+    (window as unknown as { __setupTest: { checksFail: boolean } }).__setupTest.checksFail = true;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(page.locator("#status-text")).toHaveText("Checking setup…");
+  await expect(page.locator("#setup")).toBeVisible();
+  await expect(page.locator("#setup-go")).toHaveText("Check setup");
+});
 
 for (const mode of ["playing", "starting", "recording", "transcribing"] as const) {
   test(`player state — ${mode}`, async ({ page }, testInfo) => {
