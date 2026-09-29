@@ -35,6 +35,36 @@ fn main() {
         println!("cargo:rustc-link-lib=static=hereword_quiet");
         println!("cargo:rustc-link-lib=framework=CoreAudio");
         println!("cargo:rustc-link-lib=framework=Foundation");
+        let source = "src/media_controls_macos.m";
+        println!("cargo:rerun-if-changed={source}");
+        let object = out.join("media_controls_macos.o");
+        let archive = out.join("libhereword_media_controls.a");
+        let status = std::process::Command::new("clang")
+            .args([
+                "-fobjc-arc",
+                "-Wall",
+                "-Werror",
+                "-mmacosx-version-min=13.0",
+                "-c",
+                source,
+                "-o",
+            ])
+            .arg(&object)
+            .status()
+            .expect("compile accessory media adapter");
+        assert!(
+            status.success(),
+            "accessory media adapter failed to compile"
+        );
+        let status = std::process::Command::new("ar")
+            .arg("crs")
+            .arg(&archive)
+            .arg(&object)
+            .status()
+            .expect("archive accessory media adapter");
+        assert!(status.success(), "accessory media adapter archive failed");
+        println!("cargo:rustc-link-lib=static=hereword_media_controls");
+        println!("cargo:rustc-link-lib=framework=MediaPlayer");
     }
     for name in [
         "KOKORO_BUILD_CHANNEL",
@@ -46,6 +76,8 @@ fn main() {
         "KOKORO_DIAGNOSTICS_FILE",
         "KOKORO_TTS_CPU_MEM_ARENA",
         "HEREWORD_BUILD_REVISION",
+        "HEREWORD_UPDATE_PUBLIC_KEY",
+        "HEREWORD_UPDATE_ENDPOINT",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }

@@ -118,8 +118,25 @@ accepted registration. Only `hotkey-triggered` proves the end-to-end input path.
    selection is streamed to `client/speak.py` over stdin; no selection pauses
    or resumes active playback.
 4. The client chunks text, pipelines authenticated `/speak` requests, and plays
-   audio while preparing the next chunk.
+   audio while preparing the next chunk. It buffers the first two chunks to
+   cover cold synthesis and retains one audio output stream for the full
+   reading, avoiding Bluetooth restarts at each chunk. Completion drains the
+   stream; cancellation aborts it without playing queued audio.
 5. The floating player controls pause/resume/stop without stealing focus.
+
+The shared player panel also shows recording, transcription, and short notices.
+Its drag handle moves the actual native panel and saves its position in the
+app-owned configuration directory. Each state has a close button: closing
+playback stops speech, closing recording/transcription cancels that session,
+and closing a notice dismisses it. Moving or closing the panel does not
+change its non-activating level, Space membership, or the focused editor.
+
+On macOS, `media_controls.rs` and `media_controls_macos.m` register AirPods and
+system media play, pause, toggle, and stop commands with MPRemoteCommandCenter.
+They use the same desktop PlaybackManager as the floating player. Generic
+Now Playing metadata contains no selected text. Paused speech retains ownership
+so the next accessory press resumes the same session; finished or stopped speech
+clears metadata and disables commands. Candidate registers no media handlers.
 
 On macOS the player webview is hosted in a borderless, non-activating native
 panel rather than Tauri's ordinary window. Each show operation assigns its
@@ -272,6 +289,17 @@ An existing pinned global cache is adopted with validated hard links so the app
 owns its namespace without duplicating the multi-gigabyte model. The installed
 bundle is replaceable and read-only. Models and the private environment survive
 application updates.
+
+`app_updates.rs` owns user-requested update checks and verified downloads.
+Only Stable builds with a compiled updater public key enable installation;
+Candidate remains passive. HTTPS metadata selects a version, and Tauri's
+detached signature authenticates the archive. macOS checks the archive's actual
+version and compatible Developer ID identity before starting the bundled
+`release_manager.py` through the external Python environment. The existing
+transaction retains the previous app and rolls back if fresh version, engine,
+or permission readiness fails. Windows uses the signed NSIS updater and stops
+managed processes in the updater's before-exit hook. Signing setup and draft
+publication boundaries are documented in `scripts/release/UPDATES.md`.
 
 Whisper is not loaded at general application startup. The main engine warms a
 recyclable `tts_worker.py` child and launches `stt_worker.py` only for voiced

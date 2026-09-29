@@ -31,8 +31,17 @@ jobs:
       - id: metadata
         name: Resolve one version and immutable revision
         shell: bash
+        env:
+          HEREWORD_UPDATE_PUBLIC_KEY: ${{ vars.HEREWORD_UPDATE_PUBLIC_KEY }}
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          pinned = json.loads(Path('app/src-tauri/tauri.conf.json').read_text())['plugins']['updater']['pubkey']
+          if not pinned or pinned != os.environ.get('HEREWORD_UPDATE_PUBLIC_KEY', '').strip():
+              raise SystemExit('The repository updater public key must match HEREWORD_UPDATE_PUBLIC_KEY.')
+          PY
           revision="$(git rev-parse HEAD)"
           version="$(python3 scripts/release/verify_version_sync.py)"
           tag="v${version}"
@@ -77,6 +86,9 @@ jobs:
       contents: write
     env:
       HEREWORD_BUILD_REVISION: ${{ needs.prepare.outputs.revision }}
+      HEREWORD_UPDATE_PUBLIC_KEY: ${{ vars.HEREWORD_UPDATE_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -109,7 +121,9 @@ jobs:
             APPLE_SIGNING_IDENTITY \
             APPLE_ID \
             APPLE_PASSWORD \
-            APPLE_TEAM_ID
+            APPLE_TEAM_ID \
+            HEREWORD_UPDATE_PUBLIC_KEY \
+            TAURI_SIGNING_PRIVATE_KEY
           do
             if [[ -z "${!name}" ]]; then
               echo "Missing required secret: ${name}" >&2
@@ -132,7 +146,15 @@ jobs:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseDraft: true
           prerelease: true
-          args: --target aarch64-apple-darwin
+          uploadUpdaterJson: false
+          args: --target aarch64-apple-darwin --config src-tauri/tauri.updater-release.conf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-update
+          if-no-files-found: error
+          path: |
+            app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
       - name: Verify signed microphone entitlement
         shell: bash
         run: |
@@ -206,6 +228,9 @@ jobs:
     environment: windows-release-signing
     env:
       HEREWORD_BUILD_REVISION: ${{ needs.prepare.outputs.revision }}
+      HEREWORD_UPDATE_PUBLIC_KEY: ${{ vars.HEREWORD_UPDATE_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -240,7 +265,9 @@ jobs:
             'WINDOWS_SIGNING_ENDPOINT',
             'WINDOWS_SIGNING_ACCOUNT',
             'WINDOWS_SIGNING_PROFILE',
-            'WINDOWS_EXPECTED_PUBLISHER'
+            'WINDOWS_EXPECTED_PUBLISHER',
+            'HEREWORD_UPDATE_PUBLIC_KEY',
+            'TAURI_SIGNING_PRIVATE_KEY'
           )
           foreach ($name in $required) {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
@@ -253,7 +280,14 @@ jobs:
       - name: Build signed Windows x64 installer
         working-directory: app
         shell: pwsh
-        run: npm run tauri -- build --config src-tauri/tauri.windows-release.conf.json --bundles nsis
+        run: npm run tauri -- build --config src-tauri/tauri.windows-release.conf.json --config src-tauri/tauri.updater-release.conf.json --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-update
+          if-no-files-found: error
+          path: |
+            app/src-tauri/target/release/bundle/nsis/*.exe
+            app/src-tauri/target/release/bundle/nsis/*.exe.sig
       - name: Verify, manifest, and upload Windows installer
         shell: pwsh
         env:
@@ -289,11 +323,16 @@ jobs:
     needs: [prepare, macos, windows]
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.revision }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-update'
+          merge-multiple: true
+          path: update-artifacts
       - name: Download paired manifests
         shell: bash
         env:
@@ -314,3 +353,15 @@ jobs:
             echo "Release must remain a draft until physical acceptance" >&2
             exit 1
           fi
+      - name: Write paired updater feed to the draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/write_update_manifest.py \
+            --version "${RELEASE_VERSION}" --repository "${GITHUB_REPOSITORY}" \
+            --artifacts update-artifacts --output latest.json
+          gh release upload "${RELEASE_TAG}" update-artifacts/* latest.json --clobber

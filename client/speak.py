@@ -102,6 +102,10 @@ def _state_dir() -> str:
     override = os.environ.get("KOKORO_STATE_DIR")
     if override:
         base = override
+    elif IS_MAC:
+        # The desktop host explicitly uses this directory. A standalone
+        # client must share its playback lock or both can speak at once.
+        base = os.path.expanduser("~/.config/kokoro-voice-2-1/runtime")
     else:
         try:
             who = str(os.getuid())
@@ -124,6 +128,8 @@ STATE_DIR = _state_dir()
 STATEFILE = os.path.join(STATE_DIR, "playback.state")
 LOCKFILE = os.path.join(STATE_DIR, "playback.lock")
 _CANCELLED = threading.Event()
+_OUTPUT_STREAM = None
+_OUTPUT_FORMAT = None
 
 
 class PlaybackCancelled(Exception):
@@ -500,6 +506,7 @@ def _install_cancel_handler():
 
     def cancel(_signum, _frame) -> None:
         _CANCELLED.set()
+        _close_output_stream(abort=True)
         try:
             import sounddevice as sd
             sd.stop()
@@ -557,19 +564,50 @@ def toggle_playback() -> str:
     return "paused" if pause_playback() else "playing"
 
 
+def _close_output_stream(*, abort: bool = False) -> None:
+    """Drain completed speech, but discard queued audio on cancellation."""
+    global _OUTPUT_STREAM, _OUTPUT_FORMAT
+    stream, _OUTPUT_STREAM = _OUTPUT_STREAM, None
+    _OUTPUT_FORMAT = None
+    if stream is not None:
+        try:
+            if abort:
+                stream.abort()
+            else:
+                stream.stop()
+        finally:
+            stream.close()
+
+
 def _play_file(path: str) -> None:
+    global _OUTPUT_STREAM, _OUTPUT_FORMAT
     if _CANCELLED.is_set():
         raise PlaybackCancelled
     if IS_MAC or IS_WIN:
-        # Keep playback in this long-running process; spawning PowerShell for
-        # every chunk (or afplay on macOS) creates audible dead air.
+        # One stream for the complete reading. Reopening a Bluetooth output for
+        # every chunk adds startup/drain gaps even when synthesis is ready.
         import sounddevice as sd
         import soundfile as sf
-        samples, sample_rate = sf.read(path, dtype="float32")
+        samples, sample_rate = sf.read(path, dtype="float32", always_2d=True)
+        audio_format = (sample_rate, samples.shape[1])
+        if _OUTPUT_STREAM is None or _OUTPUT_FORMAT != audio_format:
+            _close_output_stream()
+            _OUTPUT_STREAM = sd.OutputStream(
+                samplerate=sample_rate, channels=audio_format[1],
+                dtype="float32", latency="high",
+            )
+            _OUTPUT_FORMAT = audio_format
+            _OUTPUT_STREAM.start()
         _write_state(os.getpid())
-        sd.play(samples, sample_rate, blocking=True)
-        if _CANCELLED.is_set():
-            raise PlaybackCancelled
+        for offset in range(0, len(samples), 2048):
+            if _CANCELLED.is_set():
+                raise PlaybackCancelled
+            try:
+                _OUTPUT_STREAM.write(samples[offset:offset + 2048])
+            except Exception:
+                if _CANCELLED.is_set():
+                    raise PlaybackCancelled from None
+                raise
         return
     else:
         proc = subprocess.Popen(["aplay", path])
@@ -642,6 +680,7 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
     previous_handler = _install_cancel_handler()
 
     audio_q: "queue.Queue[tuple[int, str | None, str | None]]" = queue.Queue(maxsize=PREFETCH)
+    initial_buffer_ready = threading.Event()
     t_start = time.time()
 
     def deliver(item: tuple[int, str | None, str | None]) -> bool:
@@ -662,12 +701,15 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
                     chunk, voice, speed, session_end=i == len(chunks) - 1
                 )
             except urllib.error.HTTPError as e:
+                initial_buffer_ready.set()
                 deliver((i, None, f"Speech engine error {e.code}"))
                 return
             except urllib.error.URLError as e:
+                initial_buffer_ready.set()
                 deliver((i, None, f"Kokoro service unreachable at {HOST}: {e.reason}"))
                 return
             except Exception as e:  # noqa: BLE001 - producer must never hang the consumer
+                initial_buffer_ready.set()
                 deliver((i, None, str(e)))
                 return
 
@@ -681,10 +723,14 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
                     return
                 os.replace(partial, path)
             except OSError as e:
+                initial_buffer_ready.set()
                 deliver((i, None, str(e)))
                 return
             if not deliver((i, path, None)):
                 return
+            if i >= 1:
+                initial_buffer_ready.set()
+        initial_buffer_ready.set()
         deliver((-1, None, None))  # sentinel
 
     producer_thread = threading.Thread(target=producer, daemon=True)
@@ -707,6 +753,13 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
             if idx == -1:
                 break
             if first:
+                # The small first chunk cannot cover a cold synthesis of the
+                # next larger chunk. Buffer two before opening the audio route.
+                while not initial_buffer_ready.wait(0.1):
+                    if _CANCELLED.is_set():
+                        break
+                if _CANCELLED.is_set():
+                    break
                 # Signal the UI that synthesis is done and sound is starting, so it
                 # can swap its spinner for the pause control.
                 print("PLAYING", flush=True)
@@ -730,6 +783,7 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
     finally:
         was_cancelled = _CANCELLED.is_set()
         _CANCELLED.set()
+        _close_output_stream(abort=was_cancelled)
         producer_thread.join(timeout=0.5)
         if was_cancelled:
             retire_tts()

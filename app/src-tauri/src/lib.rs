@@ -8,10 +8,13 @@
 //! models live in Application Support so app replacement preserves downloaded
 //! data and never writes through the code signature.
 
+mod app_updates;
 #[cfg(target_os = "macos")]
 mod chords;
 mod dictation_protocol;
 mod hotkeys;
+#[cfg(target_os = "macos")]
+mod media_controls;
 mod media_focus;
 
 #[cfg(target_os = "windows")]
@@ -105,6 +108,8 @@ static CHORDS_STARTED: AtomicBool = AtomicBool::new(false);
 static MICROPHONE_PERMISSION_REQUEST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static STATUS_PANEL: AtomicPtr<objc2_app_kit::NSPanel> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg(target_os = "macos")]
+static STATUS_PANEL_POSITION: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
 #[cfg(target_os = "macos")]
 static STATUS_WINDOW_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
@@ -1108,7 +1113,7 @@ fn set_status_window_requested(requested: bool) {
     }
 }
 
-const PLAYER_WIDTH: f64 = 152.0;
+const PLAYER_WIDTH: f64 = 205.0;
 const PLAYER_HEIGHT: f64 = 50.0;
 const NOTICE_WIDTH: f64 = 360.0;
 const NOTICE_HEIGHT: f64 = 66.0;
@@ -1121,11 +1126,53 @@ fn place_status_panel(panel: &objc2_app_kit::NSPanel, width: f64, height: f64) {
     let mut frame = objc2_app_kit::NSScreen::mainScreen(main_thread)
         .map(|screen| screen.visibleFrame())
         .unwrap_or_else(|| panel.frame());
-    frame.origin.x += frame.size.width - width - 18.0;
-    frame.origin.y += frame.size.height - height - 14.0;
+    let saved = STATUS_PANEL_POSITION
+        .get_or_init(|| Mutex::new(load_status_panel_position()))
+        .lock()
+        .ok()
+        .and_then(|position| *position);
+    if let Some((x, y)) = saved {
+        if let Some(screen) = objc2_app_kit::NSScreen::screens(main_thread)
+            .iter()
+            .find(|screen| {
+                let area = screen.visibleFrame();
+                x >= area.origin.x
+                    && x < area.origin.x + area.size.width
+                    && y >= area.origin.y
+                    && y < area.origin.y + area.size.height
+            })
+        {
+            frame = screen.visibleFrame();
+        }
+    }
+    let default_x = frame.origin.x + frame.size.width - width - 18.0;
+    let default_y = frame.origin.y + frame.size.height - height - 14.0;
+    let (x, y) = saved.unwrap_or((default_x, default_y));
+    frame.origin.x = x.clamp(
+        frame.origin.x,
+        (frame.origin.x + frame.size.width - width).max(frame.origin.x),
+    );
+    frame.origin.y = y.clamp(
+        frame.origin.y,
+        (frame.origin.y + frame.size.height - height).max(frame.origin.y),
+    );
     frame.size.width = width;
     frame.size.height = height;
     panel.setFrame_display(frame, true);
+}
+
+#[cfg(target_os = "macos")]
+fn status_panel_position_file() -> std::path::PathBuf {
+    config_dir().join("player-position.json")
+}
+
+#[cfg(target_os = "macos")]
+fn load_status_panel_position() -> Option<(f64, f64)> {
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(status_panel_position_file()).ok()?).ok()?;
+    let x = value.get("x")?.as_f64()?;
+    let y = value.get("y")?.as_f64()?;
+    (x.is_finite() && y.is_finite()).then_some((x, y))
 }
 
 #[cfg(target_os = "macos")]
@@ -1454,6 +1501,136 @@ fn hide_player(app: &AppHandle) {
     }
 }
 
+/// A speech/notice completion may arrive after Dictate has claimed the panel.
+/// Check on the macOS UI thread as well as here, since ordering the panel is
+/// asynchronous and the recording can begin while a hide is queued.
+fn hide_player_unless_dictating(app: &AppHandle) {
+    if is_dictating(app) {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(window) = app.get_webview_window("player") {
+        let app = app.clone();
+        let _ = window.run_on_main_thread(move || {
+            if is_dictating(&app) {
+                return;
+            }
+            set_status_window_requested(false);
+            let pointer = STATUS_PANEL.load(Ordering::SeqCst);
+            if !pointer.is_null() {
+                unsafe { &*pointer }.orderOut(None);
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    hide_player(app);
+}
+
+/// Move only the native transport panel. Moving Tauri's hidden owner would
+/// break the non-activating, all-Spaces overlay used for dictation targets.
+#[tauri::command]
+fn move_player_by(app: AppHandle, dx: f64, dy: f64) {
+    if !dx.is_finite() || !dy.is_finite() || dx.abs() > 2000.0 || dy.abs() > 2000.0 {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(window) = app.get_webview_window("player") {
+        let _ = window.run_on_main_thread(move || {
+            let pointer = STATUS_PANEL.load(Ordering::SeqCst);
+            if pointer.is_null() {
+                return;
+            }
+            let panel = unsafe { &*pointer };
+            let mut frame = panel.frame();
+            frame.origin.x += dx;
+            frame.origin.y -= dy;
+            if let Some(main_thread) = objc2::MainThreadMarker::new() {
+                let center_x = frame.origin.x + frame.size.width / 2.0;
+                let center_y = frame.origin.y + frame.size.height / 2.0;
+                let screens = objc2_app_kit::NSScreen::screens(main_thread);
+                let screen = screens
+                    .iter()
+                    .find(|screen| {
+                        let area = screen.visibleFrame();
+                        center_x >= area.origin.x
+                            && center_x < area.origin.x + area.size.width
+                            && center_y >= area.origin.y
+                            && center_y < area.origin.y + area.size.height
+                    })
+                    .or_else(|| panel.screen());
+                if let Some(screen) = screen {
+                    let area = screen.visibleFrame();
+                    frame.origin.x = frame.origin.x.clamp(
+                        area.origin.x,
+                        (area.origin.x + area.size.width - frame.size.width).max(area.origin.x),
+                    );
+                    frame.origin.y = frame.origin.y.clamp(
+                        area.origin.y,
+                        (area.origin.y + area.size.height - frame.size.height).max(area.origin.y),
+                    );
+                }
+            }
+            panel.setFrame_display(frame, true);
+            if let Ok(mut saved) = STATUS_PANEL_POSITION
+                .get_or_init(|| Mutex::new(load_status_panel_position()))
+                .lock()
+            {
+                *saved = Some((frame.origin.x, frame.origin.y));
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(window) = app.get_webview_window("player") {
+        if let Ok(position) = window.outer_position() {
+            let _ = window.set_position(tauri::PhysicalPosition::new(
+                position.x + dx.round() as i32,
+                position.y + dy.round() as i32,
+            ));
+        }
+    }
+}
+
+#[tauri::command]
+fn save_player_position(app: AppHandle) {
+    #[cfg(target_os = "macos")]
+    if let Some(window) = app.get_webview_window("player") {
+        let _ = window.run_on_main_thread(move || {
+            let pointer = STATUS_PANEL.load(Ordering::SeqCst);
+            if pointer.is_null() {
+                return;
+            }
+            let frame = unsafe { &*pointer }.frame();
+            let x = frame.origin.x;
+            let y = frame.origin.y;
+            if let Ok(mut position) = STATUS_PANEL_POSITION
+                .get_or_init(|| Mutex::new(load_status_panel_position()))
+                .lock()
+            {
+                *position = Some((x, y));
+            }
+            let _ = std::fs::create_dir_all(config_dir());
+            let _ = std::fs::write(
+                status_panel_position_file(),
+                format!("{{\"x\":{x},\"y\":{y}}}"),
+            );
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
+#[tauri::command]
+fn close_player_popup(app: AppHandle, notice: bool) {
+    if !notice {
+        if is_dictating(&app) {
+            stop_managed_dictation(&app);
+        } else {
+            stop_managed_playback(&app);
+        }
+    }
+    hide_player(&app);
+}
+
 /// Spawn a client and keep the transport visible for exactly as long as it
 /// runs. Fire-and-forget left the user with no way to stop audio: the mini
 /// player was a host feature that did not survive the move off Hammerspoon.
@@ -1463,20 +1640,34 @@ fn run_client_monitored(
     args: Vec<String>,
     stdin_payload: Option<String>,
 ) {
+    if is_dictating(app) {
+        return;
+    }
     let Some(paths) = Paths::current() else {
         let _ = app.emit("engine-missing", ());
         return;
     };
-    show_player(app);
-    set_player_mode(app, "playing");
     // Own the script name because the monitoring thread outlives this call.
     let script = script.to_string();
     let app2 = app.clone();
     std::thread::spawn(move || {
         let media_lease = acquire_media_focus(&app2);
+        // A delayed Read or Snip result must not start speech after Dictate
+        // claimed the shared player. Hold this lock through spawn/registration
+        // so Dictate can always pause a child that started just before it.
+        let dictation = app2.try_state::<Dictation>();
+        let dictation_guard = dictation.as_ref().and_then(|state| state.0.lock().ok());
+        if dictation_guard
+            .as_ref()
+            .is_some_and(|session| session.is_some())
+        {
+            return;
+        }
         if let Some(manager) = app2.try_state::<playback::PlaybackManager>() {
             let _ = manager.stop();
         }
+        show_player(&app2);
+        set_player_mode(&app2, "playing");
         let mut command = client_command(&paths, &script);
         command
             .args(&args)
@@ -1486,15 +1677,17 @@ fn run_client_monitored(
             command.stdin(Stdio::piped());
         }
         let child = command.spawn();
+        let generation = child.as_ref().ok().and_then(|child| {
+            app2.try_state::<playback::PlaybackManager>()
+                .map(|manager| {
+                    let generation = manager.begin(child.id());
+                    manager.mark_playing(generation);
+                    generation
+                })
+        });
+        drop(dictation_guard);
         let (generation, output) = match child {
             Ok(mut child) => {
-                let generation = app2
-                    .try_state::<playback::PlaybackManager>()
-                    .map(|manager| {
-                        let generation = manager.begin(child.id());
-                        manager.mark_playing(generation);
-                        generation
-                    });
                 let input_result = stdin_payload.as_deref().map(|text| {
                     let mut stdin = child
                         .stdin
@@ -1514,7 +1707,7 @@ fn run_client_monitored(
                 };
                 (generation, output)
             }
-            Err(error) => (None, Err(error.to_string())),
+            Err(error) => (generation, Err(error.to_string())),
         };
         // Audio has ended even if a notice remains visible afterwards.
         drop(media_lease);
@@ -1533,7 +1726,7 @@ fn run_client_monitored(
                     .map(|manager| manager.is_current(generation))
             })
             .unwrap_or(true);
-        if current {
+        if current && !is_dictating(&app2) {
             if let Some(message) = notice {
                 show_player_notice(&app2, &message);
                 std::thread::sleep(std::time::Duration::from_secs(3));
@@ -1546,7 +1739,7 @@ fn run_client_monitored(
             })
             .unwrap_or(true);
         if cleared {
-            hide_player(&app2);
+            hide_player_unless_dictating(&app2);
         }
     });
 }
@@ -1566,10 +1759,13 @@ fn read_selection(app: AppHandle) {
             .try_state::<playback::PlaybackManager>()
             .map(|manager| manager.state())
             .unwrap_or("idle");
-        match read_action::decide(
-            text_backend::PlatformTextBackend::selected_text(),
-            playback_state,
-        ) {
+        let selection = text_backend::PlatformTextBackend::selected_text();
+        // Accessibility selection can yield while the user starts Dictate.
+        // The late Read result must not replace or hide its Listening panel.
+        if is_dictating(&app) {
+            return;
+        }
+        match read_action::decide(selection, playback_state) {
             read_action::Decision::Speak(text) => {
                 structured_log(
                     "read-selection-acquired",
@@ -1591,12 +1787,15 @@ fn read_selection(app: AppHandle) {
                 set_player_mode(&app, state);
             }
             read_action::Decision::Notice { code, message } => {
+                if is_dictating(&app) {
+                    return;
+                }
                 structured_log("read-rejected", serde_json::json!({ "code": code }));
                 show_player_notice(&app, message);
                 let app2 = app.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(3));
-                    hide_player(&app2);
+                    hide_player_unless_dictating(&app2);
                 });
             }
         }
@@ -1734,11 +1933,14 @@ fn snip_and_read(app: AppHandle) {
         // No player yet: the crosshair IS the feedback, and anything floating
         // on screen would be in the way.
         let out = client_command(&paths, "snip.py").output();
+        if is_dictating(&app2) {
+            return;
+        }
         let Ok(out) = out else {
             structured_log("snip-failed", serde_json::json!({ "code": "spawn-failed" }));
             show_player_notice(&app2, "Snip couldn't start. Open Settings.");
             std::thread::sleep(std::time::Duration::from_secs(3));
-            hide_player(&app2);
+            hide_player_unless_dictating(&app2);
             return;
         };
         let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -1755,7 +1957,7 @@ fn snip_and_read(app: AppHandle) {
             if let Some(message) = snip_failure_notice(code) {
                 show_player_notice(&app2, message);
                 std::thread::sleep(std::time::Duration::from_secs(3));
-                hide_player(&app2);
+                hide_player_unless_dictating(&app2);
             }
             return;
         }
@@ -3130,6 +3332,9 @@ pub fn run() {
             cancel_setup,
             read_selection,
             stop_speaking,
+            close_player_popup,
+            move_player_by,
+            save_player_position,
             snip_and_read,
             speak_text,
             toggle_playback,
@@ -3152,14 +3357,19 @@ pub fn run() {
             retry_permission,
             system_check,
             launch_at_login_status,
-            set_launch_at_login
+            set_launch_at_login,
+            app_updates::check_for_update,
+            app_updates::install_update
         ])
         .setup(|app| {
             use tauri_plugin_autostart::ManagerExt;
             let handle = app.handle().clone();
+            app_updates::initialize(&handle)?;
             app.manage(Engine(Mutex::new(None)));
             app.manage(Dictation(Mutex::new(None)));
             app.manage(playback::PlaybackManager::default());
+            #[cfg(target_os = "macos")]
+            media_controls::install(&handle);
             app.manage(media_focus::MediaFocus::new());
             // HereWord is an accessibility tool whose hotkeys must be available
             // immediately after login. Default autostart on and self-heal a

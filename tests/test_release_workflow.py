@@ -128,6 +128,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
             )
         self.assertEqual(self.installed_version(), "2.1.0-beta.1")
 
+    def test_update_preflight_rejects_unsigned_artifact_without_creating_backup(self):
+        with self.assertRaisesRegex(release_manager.ReleaseError, "ad-hoc signed"):
+            release_manager.preflight(self.artifact, allow_ad_hoc=False, config=self.runtime)
+        self.assertEqual(self.installed_version(), "2.1.0-beta.1")
+        self.assertFalse(self.vault.exists())
+
     def test_first_developer_id_release_requires_transition_acknowledgement(self):
         transition_codesign = self.root / "transition-codesign"
         transition_codesign.write_text(

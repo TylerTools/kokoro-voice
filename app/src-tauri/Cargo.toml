@@ -1,6 +1,6 @@
 [package]
 name = "kokoro-voice-2-1"
-version = "2.1.1-beta.12"
+version = "2.1.1-beta.15"
 description = "Private local dictation and read-aloud desktop utility"
 authors = ["TYLERtools.net"]
 edition = "2021"
@@ -32,6 +32,9 @@ sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
 zip = { version = "4", default-features = false, features = ["deflate"] }
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-updater = "=2.10.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.25.0"

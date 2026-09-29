@@ -54,6 +54,57 @@ const statusEl = document.getElementById("status") as HTMLDivElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
 const detail = document.getElementById("detail") as HTMLSpanElement;
 const SHORTCUT_SETUP_MESSAGE = "Finish setup to enable shortcuts. HereWord checks approvals automatically.";
+
+const updateStatus = document.getElementById("update-status")!;
+const checkUpdateButton = document.getElementById("check-update") as HTMLButtonElement;
+const installUpdateButton = document.getElementById("install-update") as HTMLButtonElement;
+const updateProgress = document.getElementById("update-progress") as HTMLProgressElement;
+
+checkUpdateButton.addEventListener("click", async () => {
+  checkUpdateButton.disabled = true;
+  installUpdateButton.hidden = true;
+  updateStatus.textContent = "Checking for updates…";
+  try {
+    const result = await invoke<{ configured: boolean; version: string | null }>("check_for_update");
+    updateStatus.textContent = !result.configured ? "Updates aren't available in this build."
+      : result.version ? `HereWord ${result.version} is available.` : "You're up to date.";
+    installUpdateButton.hidden = !result.version;
+  } catch (error) {
+    updateStatus.textContent = String(error);
+  } finally {
+    checkUpdateButton.disabled = false;
+  }
+});
+
+installUpdateButton.addEventListener("click", async () => {
+  checkUpdateButton.disabled = true;
+  installUpdateButton.disabled = true;
+  updateProgress.hidden = false;
+  updateProgress.removeAttribute("value");
+  updateStatus.textContent = "Downloading and verifying the update…";
+  try {
+    await invoke("install_update");
+    updateStatus.textContent = "Installing the update. HereWord will restart shortly.";
+  } catch (error) {
+    updateStatus.textContent = String(error);
+    checkUpdateButton.disabled = false;
+    installUpdateButton.disabled = false;
+    updateProgress.hidden = true;
+  }
+});
+
+listen<{ received: number; total: number | null }>("update-progress", ({ payload }) => {
+  if (payload.total) {
+    updateProgress.max = payload.total;
+    updateProgress.value = payload.received;
+  }
+});
+listen<string>("update-failed", ({ payload }) => {
+  updateStatus.textContent = payload;
+  checkUpdateButton.disabled = false;
+  installUpdateButton.disabled = false;
+  updateProgress.hidden = true;
+});
 let currentAppInfo: AppInfo = {
   app_version: "",
   build_revision: "development",

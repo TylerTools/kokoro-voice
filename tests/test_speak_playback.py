@@ -3,6 +3,8 @@ import os
 import pathlib
 import signal
 import tempfile
+import threading
+import types
 import unittest
 from unittest import mock
 
@@ -32,6 +34,7 @@ class SpeakPlaybackTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def setUp(self):
+        self.speak._close_output_stream(abort=True)
         self.speak._CANCELLED.clear()
         for path in pathlib.Path(self.temp.name).iterdir():
             if path.name != "playback.lock":
@@ -39,6 +42,63 @@ class SpeakPlaybackTests(unittest.TestCase):
 
     def runtime_audio(self):
         return sorted(pathlib.Path(self.temp.name).glob("kokoro-*.wav*"))
+
+    def test_chunks_share_one_stream_and_preserve_every_audio_frame(self):
+        class Frames(list):
+            shape = (2, 1)
+
+        stream = mock.Mock()
+        device = types.SimpleNamespace(OutputStream=mock.Mock(return_value=stream))
+        files = types.SimpleNamespace(read=mock.Mock(side_effect=[
+            (Frames([0.1, 0.2]), 24000), (Frames([0.3, 0.4]), 24000)
+        ]))
+        with mock.patch.dict("sys.modules", sounddevice=device, soundfile=files):
+            self.speak._play_file("first.wav")
+            self.speak._play_file("second.wav")
+            self.speak._close_output_stream()
+        device.OutputStream.assert_called_once()
+        stream.start.assert_called_once()
+        self.assertEqual(stream.write.call_args_list, [mock.call([0.1, 0.2]), mock.call([0.3, 0.4])])
+        stream.stop.assert_called_once()
+        stream.close.assert_called_once()
+        stream.abort.assert_not_called()
+
+    def test_cancellation_discards_buffered_audio_instead_of_draining_it(self):
+        stream = mock.Mock()
+        self.speak._OUTPUT_STREAM = stream
+        self.speak._close_output_stream(abort=True)
+        self.speak._close_output_stream(abort=True)
+        stream.abort.assert_called_once()
+        stream.close.assert_called_once()
+        stream.stop.assert_not_called()
+
+    def test_playback_waits_for_second_chunk_without_hanging_on_single_chunk(self):
+        for chunks in (["first"], ["first", "second"]):
+            with self.subTest(chunks=chunks):
+                second_started = threading.Event()
+                allow_second = threading.Event()
+                playing = threading.Event()
+
+                def synthesize(chunk, *_args, **_kwargs):
+                    if chunk == "second":
+                        second_started.set()
+                        allow_second.wait(2)
+                    return b"wav"
+
+                with (
+                    mock.patch.object(self.speak, "split_chunks", return_value=chunks),
+                    mock.patch.object(self.speak, "synthesize", side_effect=synthesize),
+                    mock.patch.object(self.speak, "_play_file", side_effect=lambda _: playing.set()),
+                ):
+                    worker = threading.Thread(target=self.speak.speak_streaming, args=("text", None, 1.0))
+                    worker.start()
+                    if len(chunks) > 1:
+                        self.assertTrue(second_started.wait(2))
+                        self.assertFalse(playing.wait(0.05))
+                        allow_second.set()
+                    worker.join(3)
+                    self.assertFalse(worker.is_alive())
+                    self.assertTrue(playing.is_set())
 
     def test_completed_playback_deletes_every_generated_chunk(self):
         played = []

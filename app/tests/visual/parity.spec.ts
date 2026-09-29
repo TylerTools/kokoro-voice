@@ -210,7 +210,7 @@ test("failed system check clears stale Ready status", async ({ page }) => {
 for (const mode of ["playing", "starting", "recording", "transcribing"] as const) {
   test(`player state — ${mode}`, async ({ page }, testInfo) => {
     await installTauriMock(page, "windows");
-    await page.setViewportSize({ width: 152, height: 50 });
+    await page.setViewportSize({ width: 205, height: 50 });
     await page.goto("/player.html");
     await page.evaluate((playerMode) => {
       const api = window as typeof window & {
@@ -222,7 +222,9 @@ for (const mode of ["playing", "starting", "recording", "transcribing"] as const
     const bar = await page.locator("#bar").boundingBox();
     expect(bar).not.toBeNull();
     expect(bar!.x).toBeGreaterThanOrEqual(0);
-    expect(bar!.x + bar!.width).toBeLessThanOrEqual(152);
+    expect(bar!.x + bar!.width).toBeLessThanOrEqual(205);
+    await expect(page.getByRole("button", { name: "Move player" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Close popup" })).toBeVisible();
     await capture(page, testInfo, `player-${mode}`);
   });
 }
@@ -239,5 +241,51 @@ test("player notice remains readable", async ({ page }, testInfo) => {
   });
   await expect(page.locator("#notice-label")).toHaveText("Copied. Press Ctrl+V to paste.");
   await expect(page.locator("#notice-label")).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Close popup" })).toBeVisible();
   await capture(page, testInfo, "player-notice-windows");
+});
+
+test("player drag and close send the matching native commands", async ({ page }) => {
+  await installTauriMock(page, "macos");
+  await page.setViewportSize({ width: 205, height: 50 });
+  await page.goto("/player.html");
+  await page.evaluate(() => {
+    const bridge = (window as typeof window & {
+      __TAURI_INTERNALS__: {
+        invoke: (command: string, args?: unknown) => Promise<unknown>;
+      };
+      __playerCalls?: Array<{ command: string; args?: unknown }>;
+    }).__TAURI_INTERNALS__;
+    const original = bridge.invoke.bind(bridge);
+    (window as typeof window & { __playerCalls?: Array<{ command: string; args?: unknown }> }).__playerCalls = [];
+    bridge.invoke = async (command, args) => {
+      (window as typeof window & { __playerCalls: Array<{ command: string; args?: unknown }> }).__playerCalls.push({ command, args });
+      return original(command, args);
+    };
+  });
+  const handle = await page.getByRole("button", { name: "Move player" }).boundingBox();
+  expect(handle).not.toBeNull();
+  await page.mouse.move(handle!.x + 15, handle!.y + 25);
+  await page.mouse.down();
+  await page.mouse.move(handle!.x + 35, handle!.y + 25, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { __playerCalls: Array<{ command: string }> }).__playerCalls
+      .some((call) => call.command === "save_player_position"),
+  )).toBe(true);
+  await page.getByRole("button", { name: "Close popup" }).click();
+  const calls = await page.evaluate(() =>
+    (window as typeof window & { __playerCalls: Array<{ command: string; args?: unknown }> }).__playerCalls,
+  );
+  expect(calls.some((call) => call.command === "move_player_by")).toBe(true);
+  expect(calls).toContainEqual({ command: "close_player_popup", args: { notice: false } });
+  await page.evaluate(() => {
+    (window as typeof window & { __kokoroShowNotice?: (message: string) => void })
+      .__kokoroShowNotice?.("Nothing selected");
+  });
+  await page.getByRole("button", { name: "Close popup" }).click();
+  const noticeCalls = await page.evaluate(() =>
+    (window as typeof window & { __playerCalls: Array<{ command: string; args?: unknown }> }).__playerCalls,
+  );
+  expect(noticeCalls).toContainEqual({ command: "close_player_popup", args: { notice: true } });
 });
