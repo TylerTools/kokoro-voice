@@ -147,6 +147,7 @@ async fn install_pending(app: &AppHandle) -> Result<(), String> {
         })
         .await
         .map_err(|error| error.to_string())??;
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -154,9 +155,8 @@ async fn install_pending(app: &AppHandle) -> Result<(), String> {
         crate::stop_managed_playback(app);
         crate::stop_managed_dictation(app);
         crate::runtime::stop_engine(app);
-        app.restart();
+        app.restart()
     }
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
