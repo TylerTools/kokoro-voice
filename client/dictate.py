@@ -173,12 +173,81 @@ def available_input_device(requested: int | str | None, devices) -> int | str | 
     return None
 
 
+class MacNativeInputStream:
+    """Capture the macOS default microphone through AVAudioEngine.
+
+    PortAudio can block indefinitely in AudioDeviceStart even while the system
+    microphone meter is receiving sound. AVAudioEngine uses the working native
+    capture path and lets macOS own the input route.
+    """
+
+    def __init__(self, callback, np):
+        import ctypes
+        import objc
+
+        # Quartz/Vision already installs PyObjC. Load AVFAudio directly so an
+        # app update needs no new Python package or network access. The tap
+        # selector's block signature must be registered for this one call.
+        ctypes.CDLL("/System/Library/Frameworks/AVFAudio.framework/AVFAudio")
+        objc.registerMetaDataForSelector(
+            b"AVAudioNode",
+            b"installTapOnBus:bufferSize:format:block:",
+            {"arguments": {5: {"callable": {
+                "retval": {"type": b"v"},
+                "arguments": (
+                    {"type": b"^v", "null_accepted": True},
+                    {"type": b"@"},
+                    {"type": b"@"},
+                ),
+            }}}},
+        )
+        self.engine = objc.lookUpClass("AVAudioEngine").alloc().init()
+        self.node = self.engine.inputNode()
+        self.format = self.node.inputFormatForBus_(0)
+        self.sample_rate = int(round(self.format.sampleRate()))
+        self.started = False
+
+        def tap(buffer, _when):
+            count = int(buffer.frameLength())
+            if count:
+                # Copy inside the tap: AVAudioEngine reuses its buffer as soon
+                # as this callback returns.
+                channel = ctypes.cast(
+                    buffer.floatChannelData().pointerAsInteger,
+                    ctypes.POINTER(ctypes.POINTER(ctypes.c_float)),
+                )[0]
+                samples = np.ctypeslib.as_array(channel, shape=(count,)).reshape(-1, 1)
+                callback(samples, count, None, None)
+
+        self.tap = tap
+        self.node.installTapOnBus_bufferSize_format_block_(
+            0, 1024, self.format, self.tap
+        )
+
+    def start(self):
+        result = self.engine.startAndReturnError_(None)
+        ok, error = result if isinstance(result, tuple) else (result, None)
+        if not ok:
+            raise RuntimeError(f"native microphone start failed: {error}")
+        self.started = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _type, _value, _traceback):
+        if self.started:
+            self.engine.stop()
+        self.node.removeTapOnBus_(0)
+        # AVAudioEngine releases tap blocks on its own queue. Let that finish
+        # before Python finalizes the callback and its Objective-C bridge.
+        time.sleep(0.3)
+
+
 def record_until_stopped(
     session: str, device: int | str | None = None, live_preview: bool = False
 ) -> bytes:
     print("MIC_PHASE imports", flush=True)
     import numpy as np
-    import sounddevice as sd
     import soundfile as sf
 
     control = stopfile(session)
@@ -206,19 +275,23 @@ def record_until_stopped(
     # microphone permission — no error, no prompt, just a hang that looks like
     # the app has frozen. Bound it, so a permissions problem reports itself.
     try:
-        if device is not None:
-            available = available_input_device(device, sd.query_devices())
-            if available is None:
-                print("STATUS preferred microphone unavailable; using system default",
-                      file=sys.stderr, flush=True)
-            device = available
-        # Capture at the device's native rate. The transcription service
-        # converts the WAV to 16 kHz; Core Audio need not resample live input.
         print("MIC_PHASE device", flush=True)
-        sample_rate = int(round(sd.query_devices(device, "input")["default_samplerate"]))
-        print("MIC_PHASE open", flush=True)
-        stream = sd.InputStream(device=device, samplerate=sample_rate, channels=1,
-                                dtype="float32", callback=cb)
+        if sys.platform == "darwin" and device is None:
+            print("MIC_PHASE open", flush=True)
+            stream = MacNativeInputStream(cb, np)
+            sample_rate = stream.sample_rate
+        else:
+            import sounddevice as sd
+            if device is not None:
+                available = available_input_device(device, sd.query_devices())
+                if available is None:
+                    print("STATUS preferred microphone unavailable; using system default",
+                          file=sys.stderr, flush=True)
+                device = available
+            sample_rate = int(round(sd.query_devices(device, "input")["default_samplerate"]))
+            print("MIC_PHASE open", flush=True)
+            stream = sd.InputStream(device=device, samplerate=sample_rate, channels=1,
+                                    dtype="float32", callback=cb)
         print("MIC_PHASE start", flush=True)
         stream.start()
     except Exception as e:  # noqa: BLE001
@@ -343,13 +416,19 @@ def main() -> int:
         return 0
 
     if args.probe_device:
-        import sounddevice as sd
         device = int(args.device) if args.device and args.device.isdigit() else args.device
         try:
-            sample_rate = int(round(sd.query_devices(device, "input")["default_samplerate"]))
-            with sd.InputStream(device=device, samplerate=sample_rate, channels=1,
-                                dtype="float32"):
-                time.sleep(0.12)
+            if sys.platform == "darwin" and device is None:
+                import numpy as np
+                with MacNativeInputStream(lambda *_: None, np) as stream:
+                    stream.start()
+                    time.sleep(0.12)
+            else:
+                import sounddevice as sd
+                sample_rate = int(round(sd.query_devices(device, "input")["default_samplerate"]))
+                with sd.InputStream(device=device, samplerate=sample_rate, channels=1,
+                                    dtype="float32"):
+                    time.sleep(0.12)
             print(json.dumps({"ok": True}))
             return 0
         except Exception as error:  # noqa: BLE001

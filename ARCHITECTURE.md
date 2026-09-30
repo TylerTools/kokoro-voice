@@ -211,6 +211,8 @@ ellipsis because the recovery action is the reason the notice exists.
    recording uses the system default without erasing the preference. Selecting
    **System default** in Settings clears that preference. The microphone opens
    before HereWord pauses other media, so audio focus cannot delay input startup.
+   On macOS, system-default input uses AVAudioEngine because PortAudio can hang
+   inside AudioDeviceStart even while the microphone works in other apps.
 3. The engine delegates synchronous Whisper inference to a lazy child process,
    while the HTTP request itself stays off the ASGI event loop so `/health`
    remains responsive.
