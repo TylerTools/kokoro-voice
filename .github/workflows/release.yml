@@ -75,7 +75,7 @@ jobs:
               --draft \
               --prerelease
           fi
-          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .id)"
+          release_id="$(gh release view "${RELEASE_TAG}" --json databaseId --jq .databaseId)"
           echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
 
   macos:
