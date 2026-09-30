@@ -176,6 +176,7 @@ def available_input_device(requested: int | str | None, devices) -> int | str | 
 def record_until_stopped(
     session: str, device: int | str | None = None, live_preview: bool = False
 ) -> bytes:
+    print("MIC_PHASE imports", flush=True)
     import numpy as np
     import sounddevice as sd
     import soundfile as sf
@@ -213,9 +214,12 @@ def record_until_stopped(
             device = available
         # Capture at the device's native rate. The transcription service
         # converts the WAV to 16 kHz; Core Audio need not resample live input.
+        print("MIC_PHASE device", flush=True)
         sample_rate = int(round(sd.query_devices(device, "input")["default_samplerate"]))
+        print("MIC_PHASE open", flush=True)
         stream = sd.InputStream(device=device, samplerate=sample_rate, channels=1,
                                 dtype="float32", callback=cb)
+        print("MIC_PHASE start", flush=True)
         stream.start()
     except Exception as e:  # noqa: BLE001
         print(f"ERROR microphone unavailable ({e}) — grant Microphone access",

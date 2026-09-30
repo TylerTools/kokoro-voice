@@ -203,7 +203,9 @@ ellipsis because the recovery action is the reason the notice exists.
 1. DictateStart captures the focused accessibility target before opening UI.
 2. `client/dictate.py` records mono audio at the microphone's native rate in
    memory; the engine converts it to 16 kHz for Whisper. The client emits a small
-   stdout protocol (`READY`, previews, `TRANSCRIBING`, final text, errors).
+   stdout protocol (microphone opening phases, `RECORDING`, previews,
+   `TRANSCRIBING`, final text, errors). Opening phases contain no audio or text
+   and help identify a stalled device call.
    With no preferred microphone saved, recording follows the operating system's
    default input. A saved microphone is used while present; if it disconnects,
    recording uses the system default without erasing the preference. Selecting

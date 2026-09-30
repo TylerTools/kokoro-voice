@@ -2282,7 +2282,28 @@ fn dictation_start(app: &AppHandle) {
                 // Bluetooth microphones may need to switch audio profiles
                 // before opening. Eight seconds killed the first attempt just
                 // as macOS was making the input available.
-                match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+                let startup_deadline = microphone_opened_at + std::time::Duration::from_secs(20);
+                let first_result = loop {
+                    let remaining =
+                        startup_deadline.saturating_duration_since(std::time::Instant::now());
+                    match rx.recv_timeout(remaining) {
+                        Ok(line) if line.starts_with("MIC_PHASE ") => {
+                            let phase = line.trim_start_matches("MIC_PHASE ");
+                            if matches!(phase, "imports" | "device" | "open" | "start") {
+                                structured_log(
+                                    "dictation-recorder-phase",
+                                    serde_json::json!({
+                                        "session": id,
+                                        "phase": phase,
+                                        "elapsed_ms": microphone_opened_at.elapsed().as_millis(),
+                                    }),
+                                );
+                            }
+                        }
+                        result => break result,
+                    }
+                };
+                match first_result {
                     Ok(line)
                         if dictation_protocol::parse(&line)
                             == dictation_protocol::Event::Recording =>

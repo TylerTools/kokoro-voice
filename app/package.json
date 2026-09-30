@@ -1,7 +1,7 @@
 {
   "name": "kokoro-voice-2-1-ui",
   "private": true,
-  "version": "2.1.1-beta.23",
+  "version": "2.1.1-beta.24",
   "type": "module",
   "scripts": {
     "dev": "vite",
