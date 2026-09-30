@@ -366,6 +366,16 @@ Screen Recording remains a just-in-time approval. Microphone authorization is
 an explicit setup and release gate because macOS can return silent audio before
 the user has answered its permission prompt.
 
+Once System Check is ready, Settings offers a replayable practice tour for
+shortcut choice, Read, Dictate, and Snip. `app/src/onboarding.ts` owns only its
+presentation and local completion marker. Spoken instructions are started by
+the person's **Hear instructions** button through the existing local TTS path;
+they never autoplay over a practice action. Animation is decorative and obeys
+reduced-motion settings. A shortcut event proves the gesture reached HereWord;
+the Read selection event, final Dictation state, or Snip OCR event then proves
+the respective action progressed. The person confirms the audible or inserted
+result before moving on. No selected, dictated, or OCR text enters tour state.
+
 The desktop host keeps a low-frequency permission watcher alive until startup
 readiness succeeds; it does not abandon setup after an arbitrary timeout. The
 release manager likewise admits fresh readiness evidence from a replacement

@@ -1771,6 +1771,7 @@ fn read_selection(app: AppHandle) {
                     "read-selection-acquired",
                     serde_json::json!({ "characters": text.chars().count() }),
                 );
+                let _ = app.emit("practice-action", "read");
                 let mut args = vec!["--stdin".to_string()];
                 args.extend(voice_args());
                 run_client_monitored(&app, "speak.py", args, Some(text));
@@ -1809,6 +1810,7 @@ fn read_selection(app: AppHandle) {
                     "read-selection-acquired",
                     serde_json::json!({ "characters": text.chars().count() }),
                 );
+                let _ = app.emit("practice-action", "read");
                 let mut args = vec!["--stdin".to_string()];
                 args.extend(voice_args());
                 run_client_monitored(&app, "speak.py", args, Some(text));
@@ -1965,6 +1967,7 @@ fn snip_and_read(app: AppHandle) {
             "snip-ocr-completed",
             serde_json::json!({ "characters": text.chars().count() }),
         );
+        let _ = app2.emit("practice-action", "snip");
         let mut args = vec!["--stdin".to_string()];
         args.extend(voice_args());
         run_client_monitored(&app2, "speak.py", args, Some(text));

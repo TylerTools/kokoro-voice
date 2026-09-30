@@ -9,6 +9,9 @@ Tauri template.
 - Capture global shortcuts and route Read, Dictate, and Snip actions.
 - Capture the focused accessibility target and apply verified dictation edits.
 - Present settings, permissions, storage, diagnostics, and shortcut recording.
+- Offer a replayable practice tour with optional spoken instructions. The tour
+  advances only after the real action event and the person's confirmation of
+  what they heard or saw; it does not change saved shortcuts on its own.
 
 Read the repository [agent guide](../AGENTS.md) and
 [architecture](../ARCHITECTURE.md) before changing lifecycle or shortcut code.

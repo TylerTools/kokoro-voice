@@ -5,6 +5,7 @@ type Platform = "macos" | "windows";
 async function installTauriMock(page: Page, platform: Platform, denied?: "accessibility" | "input_monitoring", registered = true): Promise<void> {
   await page.addInitScript(({ selectedPlatform, deniedPermission, initialRegistered }) => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
+    const eventHandlers = new Map<string, number>();
     let callbackId = 1;
     const app = {
       app_version: "2.1.1-beta.9",
@@ -32,7 +33,14 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
       snip: "Control+Alt+Command+KeyP",
     };
     if (deniedPermission && selectedPlatform === "macos") permissions[deniedPermission] = "required";
-    const state = { permissions, registered: initialRegistered, checksFail: false, pauseOtherMedia: false, prefsFail: false };
+    const state = {
+      permissions, registered: initialRegistered, checksFail: false,
+      pauseOtherMedia: false, prefsFail: false,
+      emit(event: string, payload: unknown) {
+        const id = eventHandlers.get(event);
+        if (id) callbacks.get(id)?.({ event, payload });
+      },
+    };
     const shortcutReport = () => ({
       ...hotkeys,
       bindings: Object.fromEntries(Object.entries(hotkeys).map(([slot, label]) => [
@@ -58,8 +66,12 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
         convertFileSrc(path: string) {
           return path;
         },
-        async invoke(command: string, args?: { capability?: string }) {
-          if (command.startsWith("plugin:event|")) return 1;
+        async invoke(command: string, args?: { capability?: string; event?: string; handler?: number }) {
+          if (command === "plugin:event|listen") {
+            if (args?.event && args.handler) eventHandlers.set(args.event, args.handler);
+            return 1;
+          }
+          if (command.startsWith("plugin:event|")) return null;
           if (command.startsWith("plugin:opener|")) return null;
           switch (command) {
             case "engine_status":
@@ -117,6 +129,44 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
     });
   }, { selectedPlatform: platform, deniedPermission: denied, initialRegistered: registered });
 }
+
+test("practice tour waits for each real action and the person's confirmation", async ({ page }, testInfo) => {
+  await installTauriMock(page, "macos");
+  await page.goto("/");
+  await expect(page.locator("#tour-launch")).toBeVisible();
+  await page.locator("#tour-open").click();
+  await expect(page.locator("#tour-title")).toHaveText("Make the shortcuts yours");
+  await expect(page.locator("#tour-next")).toBeDisabled();
+  await page.locator("#tour-confirm").click();
+  await page.locator("#tour-next").click();
+  await expect(page.locator("#tour-title")).toHaveText("Read selected text");
+  await expect(page.locator("#tour-confirm")).toBeDisabled();
+  await page.evaluate(() => {
+    (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } })
+      .__setupTest.emit("practice-action", "read");
+  });
+  await expect(page.locator("#tour-confirm")).toBeEnabled();
+  await page.locator("#tour-confirm").click();
+  await page.locator("#tour-next").click();
+  await expect(page.locator("#tour-title")).toHaveText("Dictate a short sentence");
+  await page.evaluate(() => {
+    (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } })
+      .__setupTest.emit("dictation-state", { session: "practice", state: "completed" });
+  });
+  await expect(page.locator("#tour-confirm")).toBeEnabled();
+  await page.locator("#tour-confirm").click();
+  await page.locator("#tour-next").click();
+  await expect(page.locator("#tour-title")).toHaveText("Snip and read");
+  await capture(page, testInfo, "practice-tour-snip");
+  await page.evaluate(() => {
+    (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } })
+      .__setupTest.emit("practice-action", "snip");
+  });
+  await page.locator("#tour-confirm").click();
+  await page.locator("#tour-next").click();
+  await expect(page.locator("#tour")).toBeHidden();
+  await expect(page.locator("#tour-open")).toHaveText("Repeat practice tour");
+});
 
 async function capture(page: Page, testInfo: TestInfo, name: string): Promise<void> {
   await page.screenshot({

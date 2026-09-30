@@ -48,6 +48,35 @@
       <button class="ghost" id="setup-cancel" hidden>Cancel</button>
     </section>
 
+    <section id="tour-launch" class="card tour-launch" hidden>
+      <div>
+        <h2>Learn HereWord by trying it</h2>
+        <p>Set your shortcuts, then practice Read, Dictate, and Snip with spoken guidance.</p>
+      </div>
+      <button id="tour-open" class="secondary">Start practice tour</button>
+    </section>
+
+    <section id="tour" class="card tour" aria-labelledby="tour-title" hidden>
+      <div class="tour-heading">
+        <div><small id="tour-progress">Step 1 of 4</small><h2 id="tour-title">Practice HereWord</h2></div>
+        <button id="tour-close" class="ghost" aria-label="Close practice tour">Close</button>
+      </div>
+      <div class="tour-demo" id="tour-demo" aria-hidden="true">
+        <span class="tour-demo-text">Select • Hold • Hear</span>
+        <kbd id="tour-key">Shortcut</kbd>
+        <span class="tour-demo-wave"><i></i><i></i><i></i><i></i><i></i></span>
+      </div>
+      <p id="tour-instruction" class="tour-instruction"></p>
+      <div id="tour-practice" class="tour-practice"></div>
+      <p id="tour-result" class="tour-result" role="status" aria-live="polite"></p>
+      <div class="tour-controls">
+        <button id="tour-hear" class="secondary">Hear instructions</button>
+        <button id="tour-change" class="secondary">Change shortcut</button>
+        <button id="tour-confirm" hidden>Yes, it worked</button>
+        <button id="tour-next" disabled>Next step</button>
+      </div>
+    </section>
+
     <section class="card">
       <h2>Shortcuts</h2>
       <div class="shortcut-row">

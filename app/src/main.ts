@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
+import { createPracticeTour } from "./onboarding";
 import {
   nextSetupStep,
   permissionReady,
@@ -54,6 +55,7 @@ const statusEl = document.getElementById("status") as HTMLDivElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
 const detail = document.getElementById("detail") as HTMLSpanElement;
 const SHORTCUT_SETUP_MESSAGE = "Finish setup to enable shortcuts. HereWord checks approvals automatically.";
+const practiceTour = createPracticeTour();
 
 const updateStatus = document.getElementById("update-status")!;
 const checkUpdateButton = document.getElementById("check-update") as HTMLButtonElement;
@@ -262,6 +264,7 @@ function renderSetup(report: SetupReport): SetupStep {
   renderPermissionRow("setup-row-input", report.permissions.input_monitoring);
 
   setupCard.hidden = step === "complete";
+  practiceTour.setReady(step === "complete");
   setupButton.hidden = step === "complete";
   setupButton.disabled = step === "engine-starting" || setupEffectInFlight;
   const labels: Record<SetupStep, string> = {
@@ -422,6 +425,7 @@ type HotkeyCapture = {
 // not presented as end-to-end success.
 let awaitingHotkeyVerification: HotkeySlot | null = null;
 listen<HotkeySlot>("hotkey-triggered", (event) => {
+  practiceTour.onHotkey(event.payload);
   if (event.payload !== awaitingHotkeyVerification) return;
   detail.textContent = `${event.payload} shortcut verified — it reached HereWord.`;
   awaitingHotkeyVerification = null;
@@ -447,6 +451,7 @@ async function refreshHotkeys(): Promise<void> {
 }
 
 listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
+  practiceTour.onDictationState(e.payload.state);
   const messages: Record<DictationState, string> = {
     starting: "Opening microphone…",
     recording: "Listening…",
@@ -651,6 +656,7 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
         const currentLabel = current[slot];
         const kbd = document.getElementById(`key-${slot}`);
         if (kbd) kbd.textContent = pretty(currentLabel);
+        practiceTour.refreshShortcut();
         awaitingHotkeyVerification = slot;
         detail.textContent = `${pretty(saved.accelerator)} registered for ${slot}. Press it now to verify.`;
       } catch (err) {
