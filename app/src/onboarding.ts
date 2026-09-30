@@ -24,14 +24,6 @@ const COMPLETE_KEY = "hereword-tour-complete-v1";
 const PENDING_KEY = "hereword-tour-pending-v1";
 const VOICE_KEY = "hereword-tour-voice-on";
 
-const setupSpoken: Record<Exclude<SetupStep, "complete">, string> = {
-  download: "First, HereWord downloads its local speech models. They stay on this computer. Choose Download and finish setup to begin.",
-  "engine-starting": "HereWord is starting the local speech engine. This can take a moment. Setup will continue when it is ready.",
-  microphone: "Allow HereWord to use the microphone. Dictation needs this permission. Setup will continue after you approve it.",
-  accessibility: "Allow HereWord in macOS Accessibility. This lets it read selected text and place dictated words where you are working.",
-  "input-monitoring": "Allow HereWord in Input Monitoring so your shortcuts work across apps. If macOS asks, quit and reopen HereWord. Setup will resume.",
-  shortcuts: "HereWord is checking that all three shortcuts are registered. When they are ready, we will practice each one together.",
-};
 const setupInstructions: Record<Exclude<SetupStep, "complete">, string> = {
   download: "Download the local speech models to begin. They stay on this computer.",
   "engine-starting": "HereWord is starting its local speech engine. This may take a moment.",
@@ -41,26 +33,22 @@ const setupInstructions: Record<Exclude<SetupStep, "complete">, string> = {
   shortcuts: "HereWord is checking your shortcuts before practice begins.",
 };
 
-const lessons: Record<TourStep, { title: string; instruction: string; spoken: string }> = {
+const lessons: Record<TourStep, { title: string; instruction: string }> = {
   read: {
     title: "Read selected words",
     instruction: "Select the sample text, then press your Read shortcut. You can keep the suggested keys or change them below. Confirm only when you hear the words.",
-    spoken: "First, let's read. Select the sample text, then press your Read shortcut. If you hear the words, choose I heard it.",
   },
   dictate: {
     title: "Speak and see your words",
     instruction: "Focus the practice box. Hold your Dictate shortcut while you speak, then release it. This step passes when your words appear in the box.",
-    spoken: "Now let's dictate. Focus the practice box, hold your Dictate shortcut, say a short sentence, then release the keys. Your words should appear in the box.",
   },
   snip: {
     title: "Read text from the screen",
     instruction: "Press your Snip shortcut, then draw a box around the sample words below. Confirm only after you hear them read aloud.",
-    spoken: "Last, let's snip. Press your Snip shortcut and draw a box around the sample words. When you hear them, choose I heard it.",
   },
   finish: {
     title: "You're all set",
     instruction: "HereWord is ready. Use your shortcuts anywhere, or open Settings later to replay this guide.",
-    spoken: "You're all set. HereWord is ready to use.",
   },
 };
 
@@ -101,29 +89,41 @@ export function initOnboarding() {
   let completionTimer: number | undefined;
   let currentSetupStep: SetupStep = "download";
   let lastSpokenSetupStep: SetupStep | null = null;
+  let narrationAudio: HTMLAudioElement | null = null;
 
   function stopNarration() {
-    window.speechSynthesis?.cancel();
+    if (narrationAudio) {
+      narrationAudio.pause();
+      narrationAudio.onended = null;
+      narrationAudio.onerror = null;
+      narrationAudio = null;
+    }
   }
 
-  function speakText(text: string, force = false, onEnd?: () => void): boolean {
+  function speakCue(cue: string, force = false, onEnd?: () => void): boolean {
     stopNarration();
     if (!voiceOn && !force) return false;
-    if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === "undefined") {
-      feedback.textContent = "Spoken guidance is unavailable here. The complete instruction is shown above.";
-      return false;
-    }
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.94;
-    utterance.lang = document.documentElement.lang || "en-US";
-    utterance.onend = onEnd ?? null;
-    utterance.onerror = onEnd ?? null;
-    window.speechSynthesis.speak(utterance);
+    const audio = new Audio(`/onboarding/${cue}.wav`);
+    narrationAudio = audio;
+    audio.onended = () => {
+      if (narrationAudio !== audio) return;
+      narrationAudio = null;
+      onEnd?.();
+    };
+    const unavailable = () => {
+      if (narrationAudio !== audio) return;
+      narrationAudio = null;
+      const message = "Voice could not play. The instruction is written above; choose Hear again to retry.";
+      (opened ? feedback : document.getElementById("setup-msg")!).textContent = message;
+      if (onEnd) window.setTimeout(onEnd, 1800);
+    };
+    audio.onerror = unavailable;
+    void audio.play().catch(unavailable);
     return true;
   }
 
   function speak(force = false) {
-    speakText(lessons[step].spoken, force);
+    speakCue(`tour-${step}`, force);
   }
 
   function renderVoiceButtons() {
@@ -218,7 +218,7 @@ export function initOnboarding() {
     render();
     title.focus();
     card.scrollIntoView({ behavior: "smooth", block: "start" });
-    const spoken = speakText(lessons.finish.spoken, false, complete);
+    const spoken = speakCue("tour-finish", false, complete);
     completionTimer = window.setTimeout(complete, spoken ? 8000 : 1800);
   }
 
@@ -229,14 +229,14 @@ export function initOnboarding() {
     localStorage.setItem(VOICE_KEY, voiceOn ? "1" : "0");
     renderVoiceButtons();
     if (voiceOn && opened) speak();
-    else if (voiceOn && currentSetupStep !== "complete") speakText(setupSpoken[currentSetupStep]);
+    else if (voiceOn && currentSetupStep !== "complete") speakCue(`setup-${currentSetupStep}`);
     else stopNarration();
   }
   narration.addEventListener("click", toggleVoice);
   setupVoiceToggle.addEventListener("click", toggleVoice);
   hearAgain.addEventListener("click", () => speak(true));
   setupHear.addEventListener("click", () => {
-    if (currentSetupStep !== "complete") speakText(setupSpoken[currentSetupStep], true);
+    if (currentSetupStep !== "complete") speakCue(`setup-${currentSetupStep}`, true);
   });
   back.addEventListener("click", () => go(previousStep(step)));
   next.addEventListener("click", () => {
@@ -349,7 +349,7 @@ export function initOnboarding() {
       renderVoiceButtons();
       if (setupStep !== "complete" && guidedSetupActive && setupStep !== lastSpokenSetupStep && !opened) {
         lastSpokenSetupStep = setupStep;
-        speakText(setupSpoken[setupStep]);
+        speakCue(`setup-${setupStep}`);
       }
       if (setupStep === "download" && !localStorage.getItem(COMPLETE_KEY)) {
         localStorage.setItem(PENDING_KEY, "1");

@@ -370,8 +370,9 @@ Screen Recording remains a just-in-time approval. Microphone authorization is
 an explicit setup and release gate because macOS can return silent audio before
 the user has answered its permission prompt.
 While guided setup is active, each model and permission step has written and
-spoken guidance plus a visible cue for the current row. Speech uses the system
-voice so the instructions are available before local models are installed.
+spoken guidance plus a visible cue for the current row. Spoken instructions
+are bundled audio rendered with HereWord's default voice, so the same natural
+voice works before local models are installed and does not depend on a network.
 Only the current setup requirement is shown; the normal settings controls are
 hidden until setup is complete.
 
@@ -394,7 +395,7 @@ After a new installation completes model and permission setup, the settings
 window opens a replayable Read, Dictate, and Snip tour, one practice task at a
 time. Existing installations can start it from Settings without an automatic
 interruption. Each lesson has
-visible instructions, spoken guidance through the operating system voice,
+visible instructions, bundled spoken guidance in HereWord's voice,
 and a short animation. Voice can be muted or replayed; reduced-motion settings
 remove the animation without hiding information. The user may finish later.
 

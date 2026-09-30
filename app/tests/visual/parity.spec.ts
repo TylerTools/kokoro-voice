@@ -139,6 +139,29 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
   }, { selectedPlatform: platform, deniedPermission: denied, initialRegistered: registered, initialOfflineReady: offlineReady });
 }
 
+async function installNarrationMock(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const played: string[] = [];
+    const paused: string[] = [];
+    Object.assign(window, { __tourPlayed: played, __tourPaused: paused });
+    Object.defineProperty(window, "Audio", {
+      configurable: true,
+      value: class {
+        src: string;
+        onended: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        constructor(src: string) { this.src = src; }
+        play() {
+          played.push(this.src);
+          Object.assign(window, { __tourLastAudio: this });
+          return Promise.resolve();
+        }
+        pause() { paused.push(this.src); }
+      },
+    });
+  });
+}
+
 async function capture(page: Page, testInfo: TestInfo, name: string): Promise<void> {
   await page.screenshot({
     path: testInfo.outputPath(`${name}.png`),
@@ -271,21 +294,7 @@ test("a shortcut can be changed within the single visible lesson", async ({ page
 
 test("new installation opens the tour after setup, while ready installations wait", async ({ page }) => {
   await installTauriMock(page, "macos", undefined, true, false);
-  await page.addInitScript(() => {
-    const spoken: string[] = [];
-    Object.assign(window, { __tourSpoken: spoken });
-    Object.defineProperty(window, "speechSynthesis", {
-      configurable: true,
-      value: { cancel() {}, speak(utterance: { text: string }) {
-        spoken.push(utterance.text);
-        Object.assign(window, { __tourLastUtterance: utterance });
-      } },
-    });
-    Object.defineProperty(window, "SpeechSynthesisUtterance", {
-      configurable: true,
-      value: class { text: string; rate = 1; lang = ""; constructor(text: string) { this.text = text; } },
-    });
-  });
+  await installNarrationMock(page);
   await page.goto("/");
   await expect(page.locator("#tour")).toBeHidden();
   await expect(page.locator("#setup")).toBeVisible();
@@ -293,31 +302,20 @@ test("new installation opens the tour after setup, while ready installations wai
   await expect(page.locator(".setup-steps li:visible")).toHaveCount(1);
   await expect(page.locator(".shortcut-row").first()).toBeHidden();
   await page.locator("#setup-go").click();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(1);
-  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken[0])).toContain("local speech models");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __tourPlayed: string[] }).__tourPlayed.length)).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { __tourPlayed: string[] }).__tourPlayed[0])).toBe("/onboarding/setup-download.wav");
   await page.evaluate(() => {
     (window as unknown as { __setupTest: { offlineReady: boolean } }).__setupTest.offlineReady = true;
     window.dispatchEvent(new Event("focus"));
   });
   await expect(page.locator("#tour-title")).toHaveText("Read selected words");
   await expect(page.locator("#tour")).toBeVisible();
-  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(2);
+  expect(await page.evaluate(() => (window as unknown as { __tourPlayed: string[] }).__tourPlayed)).toEqual(["/onboarding/setup-download.wav", "/onboarding/tour-read.wav"]);
 });
 
 test("first-run guide says all set and closes setup after the last practice", async ({ page }) => {
   await installTauriMock(page, "macos", undefined, true, false);
-  await page.addInitScript(() => {
-    Object.defineProperty(window, "speechSynthesis", {
-      configurable: true,
-      value: { cancel() {}, speak(utterance: { text: string }) {
-        Object.assign(window, { __tourLastUtterance: utterance });
-      } },
-    });
-    Object.defineProperty(window, "SpeechSynthesisUtterance", {
-      configurable: true,
-      value: class { text: string; rate = 1; lang = ""; onend: (() => void) | null = null; onerror: (() => void) | null = null; constructor(text: string) { this.text = text; } },
-    });
-  });
+  await installNarrationMock(page);
   await page.goto("/");
   await page.locator("#setup-go").click();
   await page.evaluate(() => {
@@ -338,38 +336,29 @@ test("first-run guide says all set and closes setup after the last practice", as
   await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("hotkey-triggered", "snip"));
   await page.locator("#tour-heard").click();
   await expect(page.locator("#tour-title")).toHaveText("You're all set");
-  expect(await page.evaluate(() => (window as unknown as { __tourLastUtterance: { text: string } }).__tourLastUtterance.text)).toBe("You're all set. HereWord is ready to use.");
-  await page.evaluate(() => (window as unknown as { __tourLastUtterance: { onend: () => void } }).__tourLastUtterance.onend());
+  expect(await page.evaluate(() => (window as unknown as { __tourLastAudio: { src: string } }).__tourLastAudio.src)).toBe("/onboarding/tour-finish.wav");
+  await page.evaluate(() => (window as unknown as { __tourLastAudio: { onended: () => void } }).__tourLastAudio.onended());
   await expect(page.locator("#tour")).toBeHidden();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __setupTest: { hiddenWindow: boolean } }).__setupTest.hiddenWindow)).toBe(true);
 });
 
 test("guided tour speaks each lesson and keeps captions visible when muted", async ({ page }) => {
   await installTauriMock(page, "macos");
-  await page.addInitScript(() => {
-    const spoken: string[] = [];
-    Object.assign(window, { __tourSpoken: spoken });
-    Object.defineProperty(window, "speechSynthesis", {
-      configurable: true,
-      value: { cancel() {}, speak(utterance: { text: string }) { spoken.push(utterance.text); } },
-    });
-    Object.defineProperty(window, "SpeechSynthesisUtterance", {
-      configurable: true,
-      value: class { text: string; rate = 1; lang = ""; constructor(text: string) { this.text = text; } },
-    });
-  });
+  await installNarrationMock(page);
   await page.goto("/");
   await page.locator("#tour-launch").click();
   await expect(page.locator("#tour-instruction")).toContainText("Select the sample text");
-  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { __tourPlayed: string[] }).__tourPlayed.length)).toBe(1);
   await page.locator("#tour-hear-again").click();
-  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(2);
+  expect(await page.evaluate(() => (window as unknown as { __tourPlayed: string[] }).__tourPlayed.length)).toBe(2);
+  expect(await page.evaluate(() => (window as unknown as { __tourPaused: string[] }).__tourPaused)).toEqual(["/onboarding/tour-read.wav"]);
   await page.locator("#tour-narration").click();
   await expect(page.locator("#tour-narration")).toHaveAttribute("aria-pressed", "false");
+  expect(await page.evaluate(() => (window as unknown as { __tourPaused: string[] }).__tourPaused)).toEqual(["/onboarding/tour-read.wav", "/onboarding/tour-read.wav"]);
   await page.locator("#tour-hear-again").click();
-  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(3);
+  expect(await page.evaluate(() => (window as unknown as { __tourPlayed: string[] }).__tourPlayed.length)).toBe(3);
   await page.locator("#tour-close").click();
-  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(3);
+  expect(await page.evaluate(() => (window as unknown as { __tourPlayed: string[] }).__tourPlayed.length)).toBe(3);
   await expect(page.locator("#tour")).toBeHidden();
 });
 
