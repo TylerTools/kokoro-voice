@@ -2238,6 +2238,7 @@ fn dictation_start(app: &AppHandle) {
         let mut lines_out: Vec<String> = Vec::new();
         let mut startup_timed_out = false;
         let mut final_inserted = false;
+        let mut final_fallback_notice = false;
         let child_spawn_failed = child.is_err();
         if let Ok(mut child) = child {
             let control = child.stdin.take().map(|stdin| Arc::new(Mutex::new(stdin)));
@@ -2526,13 +2527,16 @@ fn dictation_start(app: &AppHandle) {
                             &app2,
                             &format!("Copied. Press {paste_shortcut} to paste."),
                         );
+                        final_fallback_notice = true;
                     }
                 }
             }
             let _ = child.wait();
         }
 
-        hide_player(&app2);
+        if !final_fallback_notice {
+            hide_player(&app2);
+        }
         // Also release on cancellation, startup failure, or protocol/child exit.
         drop(media_lease);
         if ducked {

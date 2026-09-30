@@ -211,7 +211,8 @@ ellipsis because the recovery action is the reason the notice exists.
    process scope, owned text, selection, and caret invariants.
 5. Any focus/manual-edit/unsupported-control mismatch permanently falls back to
    clipboard for that session.
-6. Final text is always copied as recovery; secure fields are rejected.
+6. Final text is always copied as recovery; a clipboard fallback keeps its
+   paste instruction visible until dismissed. Secure fields are rejected.
 
 The child protocol is stdout-only. Its stderr must not be an unread pipe because
 a full pipe can deadlock a long recording.
