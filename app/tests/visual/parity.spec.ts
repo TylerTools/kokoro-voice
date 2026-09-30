@@ -2,9 +2,10 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 type Platform = "macos" | "windows";
 
-async function installTauriMock(page: Page, platform: Platform, denied?: "accessibility" | "input_monitoring", registered = true): Promise<void> {
-  await page.addInitScript(({ selectedPlatform, deniedPermission, initialRegistered }) => {
+async function installTauriMock(page: Page, platform: Platform, denied?: "accessibility" | "input_monitoring", registered = true, offlineReady = true): Promise<void> {
+  await page.addInitScript(({ selectedPlatform, deniedPermission, initialRegistered, initialOfflineReady }) => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
+    const eventHandlers = new Map<string, number[]>();
     let callbackId = 1;
     const app = {
       app_version: "2.1.1-beta.9",
@@ -32,7 +33,14 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
       snip: "Control+Alt+Command+KeyP",
     };
     if (deniedPermission && selectedPlatform === "macos") permissions[deniedPermission] = "required";
-    const state = { permissions, registered: initialRegistered, checksFail: false, pauseOtherMedia: false, prefsFail: false };
+    const state = {
+      permissions, registered: initialRegistered, checksFail: false, pauseOtherMedia: false, prefsFail: false, offlineReady: initialOfflineReady,
+      emit(event: string, payload: unknown) {
+        for (const handler of eventHandlers.get(event) ?? []) {
+          callbacks.get(handler)?.({ event, id: 1, payload });
+        }
+      },
+    };
     const shortcutReport = () => ({
       ...hotkeys,
       bindings: Object.fromEntries(Object.entries(hotkeys).map(([slot, label]) => [
@@ -58,7 +66,12 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
         convertFileSrc(path: string) {
           return path;
         },
-        async invoke(command: string, args?: { capability?: string }) {
+        async invoke(command: string, args?: Record<string, unknown>) {
+          if (command === "plugin:event|listen") {
+            const event = String(args?.event);
+            eventHandlers.set(event, [...(eventHandlers.get(event) ?? []), Number(args?.handler)]);
+            return 1;
+          }
           if (command.startsWith("plugin:event|")) return 1;
           if (command.startsWith("plugin:opener|")) return null;
           switch (command) {
@@ -73,7 +86,7 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
                 hotkeys: shortcutReport(),
                 microphones: [],
                 setup: { stage: "complete" },
-                offline_ready: true,
+                offline_ready: state.offlineReady,
               };
             case "hotkeys":
               return shortcutReport();
@@ -115,7 +128,7 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
         },
       },
     });
-  }, { selectedPlatform: platform, deniedPermission: denied, initialRegistered: registered });
+  }, { selectedPlatform: platform, deniedPermission: denied, initialRegistered: registered, initialOfflineReady: offlineReady });
 }
 
 async function capture(page: Page, testInfo: TestInfo, name: string): Promise<void> {
@@ -192,6 +205,104 @@ test("approved permissions still require shortcut registration", async ({ page }
   await expect(page.locator("#status-text")).toHaveText("Ready");
   await expect(page.locator("#setup")).toBeHidden();
   await expect(page.locator("#detail")).toHaveText("Setup complete.");
+});
+
+test("guided tour waits for practice evidence", async ({ page }, testInfo) => {
+  await installTauriMock(page, "macos");
+  await page.addInitScript(() => localStorage.setItem("hereword-tour-voice-on", "0"));
+  await page.goto("/");
+  await expect(page.locator("#tour")).toBeHidden();
+  await page.locator("#tour-launch").click();
+  await expect(page.locator("#tour-title")).toHaveText("Learn HereWord by trying it");
+  await page.locator("#tour-next").click();
+  await expect(page.locator("#tour-title")).toHaveText("Read selected words");
+  await expect(page.locator("#tour-next")).toBeDisabled();
+  await page.locator("#tour-select-text").click();
+  await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("hotkey-triggered", "read"));
+  await expect(page.locator("#tour-heard")).toBeEnabled();
+  await page.locator("#tour-heard").click();
+  await expect(page.locator("#tour-next")).toBeEnabled();
+  await capture(page, testInfo, "tour-read");
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  await capture(page, testInfo, "tour-read-dark-reduced-motion");
+  expect(await page.locator(".tour-demo-key").evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+  await page.locator("#tour-next").click();
+  await expect(page.locator("#tour-title")).toHaveText("Speak and see your words");
+  await page.locator("#tour-focus-dictate").click();
+  await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("hotkey-triggered", "dictate"));
+  await page.locator("#tour-dictate-text").fill("HereWord hears me");
+  await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("dictation-state", { state: "completed" }));
+  await expect(page.locator("#tour-next")).toBeEnabled();
+  await page.locator("#tour-next").click();
+  await expect(page.locator("#tour-title")).toHaveText("Read text from the screen");
+  await expect(page.locator("#tour-heard")).toBeDisabled();
+  await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("hotkey-triggered", "snip"));
+  await page.locator("#tour-heard").click();
+  await page.locator("#tour-next").click();
+  await expect(page.locator("#tour-title")).toHaveText("You're ready to use HereWord");
+  await page.locator("#tour-next").click();
+  await expect(page.locator("#tour")).toBeHidden();
+  expect(await page.evaluate(() => localStorage.getItem("hereword-tour-complete-v1"))).toBe("1");
+});
+
+test("new installation opens the tour after setup, while ready installations wait", async ({ page }) => {
+  await installTauriMock(page, "macos", undefined, true, false);
+  await page.addInitScript(() => {
+    const spoken: string[] = [];
+    Object.assign(window, { __tourSpoken: spoken });
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: { cancel() {}, speak(utterance: { text: string }) { spoken.push(utterance.text); } },
+    });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", {
+      configurable: true,
+      value: class { text: string; rate = 1; lang = ""; constructor(text: string) { this.text = text; } },
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator("#tour")).toBeHidden();
+  await expect(page.locator("#setup")).toBeVisible();
+  await expect(page.locator("#setup-row-engine")).toHaveClass(/setup-row--current/);
+  await page.locator("#setup-go").click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken[0])).toContain("local speech models");
+  await page.evaluate(() => {
+    (window as unknown as { __setupTest: { offlineReady: boolean } }).__setupTest.offlineReady = true;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(page.locator("#tour-title")).toHaveText("Learn HereWord by trying it");
+  await expect(page.locator("#tour")).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(2);
+});
+
+test("guided tour speaks each lesson and keeps captions visible when muted", async ({ page }) => {
+  await installTauriMock(page, "macos");
+  await page.addInitScript(() => {
+    const spoken: string[] = [];
+    Object.assign(window, { __tourSpoken: spoken });
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: { cancel() {}, speak(utterance: { text: string }) { spoken.push(utterance.text); } },
+    });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", {
+      configurable: true,
+      value: class { text: string; rate = 1; lang = ""; constructor(text: string) { this.text = text; } },
+    });
+  });
+  await page.goto("/");
+  await page.locator("#tour-launch").click();
+  await expect(page.locator("#tour-instruction")).toContainText("shown and spoken");
+  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(1);
+  await page.locator("#tour-next").click();
+  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(2);
+  await page.locator("#tour-narration").click();
+  await expect(page.locator("#tour-narration")).toHaveAttribute("aria-pressed", "false");
+  await page.locator("#tour-back").click();
+  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(2);
+  await expect(page.locator("#tour-instruction")).toBeVisible();
+  await page.locator("#tour-hear-again").click();
+  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(3);
 });
 
 test("failed system check clears stale Ready status", async ({ page }) => {

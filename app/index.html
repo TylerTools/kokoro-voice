@@ -26,8 +26,12 @@
       <p id="setup-intro">
         Download the local models to finish setting up HereWord on this computer.
       </p>
+      <div class="setup-guide-actions">
+        <button id="setup-hear" class="secondary" type="button">Hear this step</button>
+        <button id="setup-voice-toggle" class="ghost" type="button">Voice on</button>
+      </div>
       <ol class="setup-steps">
-        <li><span>Local speech models</span><strong id="setup-state-engine">Checking…</strong></li>
+        <li id="setup-row-engine"><span>Local speech models</span><strong id="setup-state-engine">Checking…</strong></li>
         <li id="setup-row-microphone"><span>Microphone</span><strong id="setup-state-microphone">Checking…</strong></li>
         <li id="setup-row-accessibility"><span>Accessibility</span><strong id="setup-state-accessibility">Checking…</strong></li>
         <li id="setup-row-input"><span>Global shortcuts</span><strong id="setup-state-input">Checking…</strong></li>
@@ -48,8 +52,50 @@
       <button class="ghost" id="setup-cancel" hidden>Cancel</button>
     </section>
 
+    <section id="tour" class="card tour" aria-labelledby="tour-title" hidden>
+      <div class="tour-heading">
+        <span id="tour-progress" class="tour-progress">Step 1 of 5</span>
+        <button id="tour-close" class="ghost" type="button" aria-label="Close guided tour">Finish later</button>
+      </div>
+      <h2 id="tour-title" tabindex="-1">Welcome to HereWord</h2>
+      <p id="tour-instruction" class="tour-instruction"></p>
+      <div id="tour-demo" class="tour-demo" aria-hidden="true">
+        <span class="tour-demo-selection">Select words</span>
+        <span class="tour-demo-key">Press shortcut</span>
+        <span class="tour-demo-waves"><i></i><i></i><i></i><i></i><i></i></span>
+      </div>
+      <div id="tour-practice" class="tour-practice" hidden>
+        <button id="tour-change" class="secondary" type="button" hidden>Change shortcut</button>
+        <p id="tour-shortcut" class="tour-shortcut"></p>
+        <div id="tour-read-practice" hidden>
+          <label for="tour-read-text">Practice text</label>
+          <textarea id="tour-read-text" readonly rows="2">HereWord reads the words I select.</textarea>
+          <button id="tour-select-text" class="secondary" type="button">Select this text</button>
+        </div>
+        <div id="tour-dictate-practice" hidden>
+          <label for="tour-dictate-text">Dictate into this box</label>
+          <textarea id="tour-dictate-text" rows="3" placeholder="Your spoken words will appear here."></textarea>
+          <button id="tour-focus-dictate" class="secondary" type="button">Focus practice box</button>
+        </div>
+        <div id="tour-snip-practice" class="tour-snip-practice" hidden>
+          <span>Capture and hear this text</span>
+          <strong>Words become sound.</strong>
+        </div>
+        <button id="tour-heard" class="secondary" type="button" hidden>I heard it</button>
+      </div>
+      <p id="tour-feedback" class="tour-feedback" role="status" aria-live="polite"></p>
+      <div class="tour-actions">
+        <button id="tour-narration" class="ghost" type="button">Voice on</button>
+        <button id="tour-hear-again" class="ghost" type="button">Hear again</button>
+        <span class="tour-action-spacer"></span>
+        <button id="tour-back" class="secondary" type="button" hidden>Back</button>
+        <button id="tour-next" type="button">Start</button>
+      </div>
+    </section>
+
     <section class="card">
       <h2>Shortcuts</h2>
+      <p class="tour-launch-row"><button id="tour-launch" class="secondary" type="button" disabled>Take the guided tour</button><small>Practice Read, Dictate, and Snip with spoken guidance.</small></p>
       <div class="shortcut-row">
         <span><strong>Read</strong><small>Selected text</small></span>
         <kbd id="key-read">Loading…</kbd>

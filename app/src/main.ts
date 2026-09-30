@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
+import { initOnboarding } from "./onboarding";
 import {
   nextSetupStep,
   permissionReady,
@@ -213,6 +214,7 @@ let setupReport: SetupReport | null = null;
 let requestedStep: SetupStep | null = null;
 let setupRefreshInFlight = false;
 let setupEffectInFlight = false;
+const onboarding = initOnboarding();
 
 function setSetupActive(active: boolean): void {
   guidedSetupActive = active;
@@ -283,6 +285,7 @@ function renderSetup(report: SetupReport): SetupStep {
   if (step === "shortcuts") {
     setupMessage.textContent = "Permissions are approved. HereWord is checking shortcuts. If this continues, quit and reopen HereWord; setup will resume and check again.";
   }
+  onboarding.onSetupStep(step, guidedSetupActive);
   return step;
 }
 
@@ -651,6 +654,7 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
         const currentLabel = current[slot];
         const kbd = document.getElementById(`key-${slot}`);
         if (kbd) kbd.textContent = pretty(currentLabel);
+        window.dispatchEvent(new CustomEvent("hereword-hotkey-saved", { detail: { slot } }));
         awaitingHotkeyVerification = slot;
         detail.textContent = `${pretty(saved.accelerator)} registered for ${slot}. Press it now to verify.`;
       } catch (err) {
