@@ -33,7 +33,6 @@ TOKEN_FILE = os.environ.get(
     "KOKORO_TOKEN_FILE", os.path.expanduser("~/.config/kokoro-voice-2-1/token")
 )
 
-SAMPLE_RATE = 16000          # whisper's native rate — no resampling needed
 MAX_SECONDS = float(os.environ.get("DICTATE_MAX_SECONDS", "120"))
 PREVIEW_INTERVAL = float(os.environ.get("DICTATE_PREVIEW_INTERVAL", "0.55"))
 PREVIEW_MAX_SECONDS = float(os.environ.get("DICTATE_PREVIEW_WINDOW", "18"))
@@ -148,12 +147,13 @@ def transcribe(wav_bytes: bytes, timeout: float = 120) -> dict:
         return json.loads(resp.read())
 
 
-def _wav_bytes(frames, np, sf, max_seconds: float | None = None) -> bytes:
+def _wav_bytes(frames, np, sf, sample_rate: int,
+               max_seconds: float | None = None) -> bytes:
     audio = np.concatenate(frames, axis=0)
     if max_seconds is not None:
-        audio = audio[-int(SAMPLE_RATE * max_seconds):]
+        audio = audio[-int(sample_rate * max_seconds):]
     buf = io.BytesIO()
-    sf.write(buf, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
+    sf.write(buf, audio, sample_rate, format="WAV", subtype="PCM_16")
     return buf.getvalue()
 
 
@@ -211,7 +211,10 @@ def record_until_stopped(
                 print("STATUS preferred microphone unavailable; using system default",
                       file=sys.stderr, flush=True)
             device = available
-        stream = sd.InputStream(device=device, samplerate=SAMPLE_RATE, channels=1,
+        # Capture at the device's native rate. The transcription service
+        # converts the WAV to 16 kHz; Core Audio need not resample live input.
+        sample_rate = int(round(sd.query_devices(device, "input")["default_samplerate"]))
+        stream = sd.InputStream(device=device, samplerate=sample_rate, channels=1,
                                 dtype="float32", callback=cb)
         stream.start()
     except Exception as e:  # noqa: BLE001
@@ -232,17 +235,18 @@ def record_until_stopped(
                 while not preview_stop.wait(max(0, next_preview - time.monotonic())):
                     snapshot = list(frames)
                     samples = sum(len(frame) for frame in snapshot)
-                    if samples - last_samples < SAMPLE_RATE * 0.6:
+                    if samples - last_samples < sample_rate * 0.6:
                         continue
                     last_samples = samples
                     try:
                         result = transcribe(
-                            _wav_bytes(snapshot, np, sf, PREVIEW_MAX_SECONDS), timeout=15
+                            _wav_bytes(snapshot, np, sf, sample_rate,
+                                       PREVIEW_MAX_SECONDS), timeout=15
                         )
                         text = " ".join((result.get("text") or "").split())
                         clean = "".join(c if c.isprintable() else " " for c in text)
                         if clean:
-                            kind = "PREVIEW_FULL" if samples <= SAMPLE_RATE * PREVIEW_MAX_SECONDS else "PREVIEW_ROLLING"
+                            kind = "PREVIEW_FULL" if samples <= sample_rate * PREVIEW_MAX_SECONDS else "PREVIEW_ROLLING"
                             print(kind + " " + clean, flush=True)
                     except Exception:
                         # Preview is advisory. The authoritative final pass
@@ -292,7 +296,7 @@ def record_until_stopped(
     if not frames:
         return b""
 
-    return _wav_bytes(frames, np, sf)
+    return _wav_bytes(frames, np, sf, sample_rate)
 
 
 def main() -> int:
@@ -338,7 +342,8 @@ def main() -> int:
         import sounddevice as sd
         device = int(args.device) if args.device and args.device.isdigit() else args.device
         try:
-            with sd.InputStream(device=device, samplerate=SAMPLE_RATE, channels=1,
+            sample_rate = int(round(sd.query_devices(device, "input")["default_samplerate"]))
+            with sd.InputStream(device=device, samplerate=sample_rate, channels=1,
                                 dtype="float32"):
                 time.sleep(0.12)
             print(json.dumps({"ok": True}))
@@ -363,7 +368,8 @@ def main() -> int:
         print("ERROR no audio captured", flush=True)
         return 1
 
-    seconds = len(wav) / (SAMPLE_RATE * 2)
+    import soundfile as sf
+    seconds = sf.info(io.BytesIO(wav)).duration
     print(f"TRANSCRIBING {seconds:.1f}", flush=True)   # UI switches to spinner
 
     try:

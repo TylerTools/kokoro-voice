@@ -201,12 +201,14 @@ ellipsis because the recovery action is the reason the notice exists.
 ## Dictation path
 
 1. DictateStart captures the focused accessibility target before opening UI.
-2. `client/dictate.py` records 16 kHz mono audio in memory and emits a small
+2. `client/dictate.py` records mono audio at the microphone's native rate in
+   memory; the engine converts it to 16 kHz for Whisper. The client emits a small
    stdout protocol (`READY`, previews, `TRANSCRIBING`, final text, errors).
    With no preferred microphone saved, recording follows the operating system's
    default input. A saved microphone is used while present; if it disconnects,
    recording uses the system default without erasing the preference. Selecting
-   **System default** in Settings clears that preference.
+   **System default** in Settings clears that preference. The microphone opens
+   before HereWord pauses other media, so audio focus cannot delay input startup.
 3. The engine delegates synchronous Whisper inference to a lazy child process,
    while the HTTP request itself stays off the ASGI event loop so `/health`
    remains responsive.

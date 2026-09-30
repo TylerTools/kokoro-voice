@@ -79,11 +79,13 @@ class DictationControlTests(unittest.TestCase):
         import numpy as np
         import soundfile as sf
 
-        frames = [np.zeros((self.dictate.SAMPLE_RATE, 1), dtype="float32") for _ in range(3)]
-        wav = self.dictate._wav_bytes(frames, np, sf, max_seconds=1.0)
+        sample_rate = 24000
+        frames = [np.zeros((sample_rate, 1), dtype="float32") for _ in range(3)]
+        wav = self.dictate._wav_bytes(frames, np, sf, sample_rate,
+                                      max_seconds=1.0)
         audio, rate = sf.read(io.BytesIO(wav), dtype="float32")
-        self.assertEqual(rate, self.dictate.SAMPLE_RATE)
-        self.assertEqual(len(audio), self.dictate.SAMPLE_RATE)
+        self.assertEqual(rate, sample_rate)
+        self.assertEqual(len(audio), sample_rate)
 
     def test_preferred_microphone_falls_back_only_when_unavailable(self):
         devices = [

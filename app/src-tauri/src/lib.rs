@@ -2217,7 +2217,10 @@ fn dictation_start(app: &AppHandle) {
         // second later, after Whisper has finished. The player therefore sat on
         // "Listening…" with the mic already closed, which reads as stuck on and
         // as though it were still recording you.
-        let mut media_lease = acquire_media_focus(&app2);
+        // Opening the system microphone must finish before we inspect or
+        // quiet other audio processes. A Core Audio tap can contend with an
+        // input device while macOS is changing its route.
+        let mut media_lease = None;
         let mut recorder = client_command(&paths, "dictate.py");
         recorder
             .arg("--record")
@@ -2285,6 +2288,7 @@ fn dictation_start(app: &AppHandle) {
                         );
                         set_player_mode(&app2, "recording");
                         set_dictation_status(&app2, &id, DictationStatus::Recording);
+                        media_lease = acquire_media_focus(&app2);
                         let pending_control = app2.try_state::<Dictation>().and_then(|state| {
                             state.0.lock().ok().and_then(|session| {
                                 session.as_ref().filter(|active| active.id == id).and_then(
