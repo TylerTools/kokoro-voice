@@ -12,6 +12,8 @@ A draft release must not be published until every item is recorded as passed.
 - [ ] macOS physical tests pass locally and through Deskflow: read, hold/release dictation, snip, stop, pause/resume.
 - [ ] Windows physical tests pass on CPU-only and NVIDIA machines.
 - [ ] Microphone denied, granted, revoked, missing, changed, and stalled-open cases report the correct state.
+- [ ] Dictation follows the system default input, including after an AirPods/default-input change; a disconnected preferred mic falls back without changing the saved preference.
+- [ ] A short dictation produces one final transcript and inserts it or leaves a visible clipboard paste notice when target ownership is lost.
 - [ ] Rapid release, missed release, 120-second watchdog, repeated dictation, and playback duck/resume pass.
 - [ ] Offline relaunch works after setup; reboot, single-instance behavior, update, and uninstall pass.
 - [ ] Time-to-first-audio, transcription latency, and inter-chunk gap results are attached.

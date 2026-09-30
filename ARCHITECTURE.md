@@ -202,8 +202,10 @@ ellipsis because the recovery action is the reason the notice exists.
 1. DictateStart captures the focused accessibility target before opening UI.
 2. `client/dictate.py` records 16 kHz mono audio in memory and emits a small
    stdout protocol (`READY`, previews, `TRANSCRIBING`, final text, errors).
-   A saved microphone is used while present; if it disconnects, recording uses
-   the system default without erasing the preferred device.
+   With no preferred microphone saved, recording follows the operating system's
+   default input. A saved microphone is used while present; if it disconnects,
+   recording uses the system default without erasing the preference. Selecting
+   **System default** in Settings clears that preference.
 3. The engine delegates synchronous Whisper inference to a lazy child process,
    while the HTTP request itself stays off the ASGI event loop so `/health`
    remains responsive.

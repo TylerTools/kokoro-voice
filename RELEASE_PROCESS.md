@@ -79,7 +79,6 @@ intentionally incompatible with promotion.
 
 ```sh
 scripts/release/promote-macos.sh \
-  --allow-signing-transition \
   "app/src-tauri/target/release/bundle/macos/HereWord.app"
 ```
 
@@ -97,14 +96,12 @@ for an intentional local test; it should not be the normal release path.
 Without `KOKORO_CODESIGN_IDENTITY`, Stable builds stop before compiling. Setting
 `KOKORO_ALLOW_AD_HOC_STABLE=1` produces an ad-hoc local artifact that can be
 tested but is not eligible for normal promotion.
-The one-time transition from the currently ad-hoc-signed Stable app to a
-Developer ID build can reset macOS privacy permissions, so promotion requires
-the explicit `--allow-signing-transition` acknowledgement. Later releases must
-match that Developer ID team and the installed app's designated requirement;
-they do not use the transition flag.
-During that one-time transition the updater waits up to three minutes for the
-privacy permissions to be granted; Stable rechecks them without creating a
-second input owner. Normal signed updates use a 30-second readiness window.
+Use `--allow-signing-transition` only when the installed Stable app is still
+ad-hoc signed and the new build is its first Developer ID build. That one-time
+transition can reset macOS privacy grants and has a three-minute readiness
+window. Later releases must match the installed app's Developer ID team and
+designated requirement; they use the normal 30-second readiness window and the
+command above.
 
 For an intentional local ad-hoc update whose new code requirement must be
 re-added in macOS Privacy & Security, `--defer-accessibility-check` commits only

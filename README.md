@@ -4,8 +4,9 @@ Local read-aloud, dictation, and screen-snip OCR for your desktop. Select text
 anywhere and hear it; hold a key and speak to type; drag a box around anything
 on screen and have it read to you. All of it runs on your own machine.
 
-**No cloud, no API keys, no account.** Once the models are downloaded the
-service makes no outbound network calls at all — enforced, not just intended.
+**No cloud speech processing, no API keys, no account.** Once the models are
+downloaded, speech processing stays local. The app contacts the release feed
+only when you choose **Check for updates**.
 
 | | Engine | Speed on an M4 Mac mini |
 |---|---|---|
@@ -38,6 +39,9 @@ Developer and agent documentation:
 - [Architecture and runtime contracts](ARCHITECTURE.md)
 - [Repository code map and change rules](AGENTS.md)
 - [Desktop host development guide](app/README.md)
+- [Release process](RELEASE_PROCESS.md) and [release gate](RELEASE_CHECKLIST.md)
+- [Signed update setup and feed](scripts/release/UPDATES.md)
+- [Mac App Store feasibility decision](docs/MAC_APP_STORE_DECISION.md)
 
 - **`server.py`** — the service. Owns both models.
 - **`client/speak.py`** — read-aloud client. **Standard library only**, so it
@@ -91,6 +95,13 @@ curl localhost:8125/health
 
 **Dictate** — hold the dictation key, speak, release. The text is typed into
 whatever has focus, and also placed on the clipboard as a fallback.
+
+The microphone selector defaults to **System default**, which follows the input
+selected in macOS or Windows. You can choose a specific microphone in Settings;
+if that device disconnects, dictation temporarily uses the system default.
+Choose **System default** again to stop preferring a specific device. For a
+short dictation, HereWord waits for the final transcript rather than starting
+a competing live preview.
 
 Live editing is target-locked on macOS: before every revision the app verifies
 the original accessible control, caret, and text it owns. Focus changes, manual
@@ -153,7 +164,7 @@ Environment variables, all optional:
 | `POST` | `/speak` | `{"text", "voice", "speed", "lang"}` | `audio/wav` |
 | `POST` | `/transcribe` | raw WAV bytes | `{"text", "audio_seconds", ...}` |
 
-Both `POST` routes require `Authorization: Bearer <token>` when a token is
+Write routes require `Authorization: Bearer <token>` when a token is
 configured. `/speak` also returns `X-Audio-Duration`, `X-Synth-Seconds` and
 `X-Voice` headers.
 
@@ -167,10 +178,11 @@ The defaults are deliberately closed:
   can't be timed. The token lives in a `0600` file that the service and clients
   both read, keeping it out of `ps` output, shell history and environment dumps.
 - **Request bodies are capped before being buffered**, not after parsing.
-- **No outbound network calls at runtime.** The Whisper revision is pinned and
+- **Local speech processing after setup.** The Whisper revision is pinned and
   the service runs with `HF_HUB_OFFLINE=1`. Otherwise the model hub is contacted
   on every load to resolve "latest", which breaks the offline guarantee and lets
-  an upstream change swap your weights silently.
+  an upstream change swap your weights silently. The desktop app requests
+  release metadata only after a user-initiated update check.
 - **Nothing sensitive is logged.** Transcripts and spoken text never reach the
   logs — only character counts, durations, and a chars-per-second rate used to
   flag anomalies.
