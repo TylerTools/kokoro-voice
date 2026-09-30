@@ -4,6 +4,7 @@
  * results; this view never awards success from an animation or saved setting.
  */
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { SetupStep } from "./setup_flow";
 import {
   canAdvance,
@@ -31,13 +32,16 @@ const setupSpoken: Record<Exclude<SetupStep, "complete">, string> = {
   "input-monitoring": "Allow HereWord in Input Monitoring so your shortcuts work across apps. If macOS asks, quit and reopen HereWord. Setup will resume.",
   shortcuts: "HereWord is checking that all three shortcuts are registered. When they are ready, we will practice each one together.",
 };
+const setupInstructions: Record<Exclude<SetupStep, "complete">, string> = {
+  download: "Download the local speech models to begin. They stay on this computer.",
+  "engine-starting": "HereWord is starting its local speech engine. This may take a moment.",
+  microphone: "Allow microphone access so HereWord can take dictation.",
+  accessibility: "Allow Accessibility so HereWord can read selected text and insert your words.",
+  "input-monitoring": "Allow Input Monitoring so your shortcuts work in other apps.",
+  shortcuts: "HereWord is checking your shortcuts before practice begins.",
+};
 
 const lessons: Record<TourStep, { title: string; instruction: string; spoken: string }> = {
-  welcome: {
-    title: "Learn HereWord by trying it",
-    instruction: "This short tour teaches you to Read, Dictate, and Snip. Each instruction is shown and spoken. You can turn the voice off or finish later at any time.",
-    spoken: "Welcome to HereWord. We'll practice reading, dictation, and snipping together. Each step tells you what to do and waits for you to try it.",
-  },
   read: {
     title: "Read selected words",
     instruction: "Select the sample text, then press your Read shortcut. You can keep the suggested keys or change them below. Confirm only when you hear the words.",
@@ -54,9 +58,9 @@ const lessons: Record<TourStep, { title: string; instruction: string; spoken: st
     spoken: "Last, let's snip. Press your Snip shortcut and draw a box around the sample words. When you hear them, choose I heard it.",
   },
   finish: {
-    title: "You're ready to use HereWord",
-    instruction: "You tested all three actions. You can replay this tour any time from Settings, and you can change your shortcuts there too.",
-    spoken: "Great work. You've tested reading, dictation, and snipping. You can replay this tour at any time from HereWord Settings.",
+    title: "You're all set",
+    instruction: "HereWord is ready. Use your shortcuts anywhere, or open Settings later to replay this guide.",
+    spoken: "You're all set. HereWord is ready to use.",
   },
 };
 
@@ -83,15 +87,18 @@ export function initOnboarding() {
   const next = document.getElementById("tour-next") as HTMLButtonElement;
   const narration = document.getElementById("tour-narration") as HTMLButtonElement;
   const hearAgain = document.getElementById("tour-hear-again") as HTMLButtonElement;
+  const closeButton = document.getElementById("tour-close") as HTMLButtonElement;
   const setupHear = document.getElementById("setup-hear") as HTMLButtonElement;
   const setupVoiceToggle = document.getElementById("setup-voice-toggle") as HTMLButtonElement;
 
-  let step: TourStep = "welcome";
+  let step: TourStep = "read";
   let evidence: TourEvidence = emptyEvidence();
   let voiceOn = localStorage.getItem(VOICE_KEY) !== "0";
   let dictationTargetArmed = false;
   let dictationBefore = "";
   let opened = false;
+  let autoStarted = false;
+  let completionTimer: number | undefined;
   let currentSetupStep: SetupStep = "download";
   let lastSpokenSetupStep: SetupStep | null = null;
 
@@ -99,17 +106,20 @@ export function initOnboarding() {
     window.speechSynthesis?.cancel();
   }
 
-  function speakText(text: string, force = false) {
+  function speakText(text: string, force = false, onEnd?: () => void): boolean {
     stopNarration();
-    if (!voiceOn && !force) return;
+    if (!voiceOn && !force) return false;
     if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === "undefined") {
       feedback.textContent = "Spoken guidance is unavailable here. The complete instruction is shown above.";
-      return;
+      return false;
     }
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.94;
     utterance.lang = document.documentElement.lang || "en-US";
+    utterance.onend = onEnd ?? null;
+    utterance.onerror = onEnd ?? null;
     window.speechSynthesis.speak(utterance);
+    return true;
   }
 
   function speak(force = false) {
@@ -128,7 +138,7 @@ export function initOnboarding() {
     const lesson = lessons[step];
     title.textContent = lesson.title;
     instruction.textContent = lesson.instruction;
-    progress.textContent = `Step ${TOUR_STEPS.indexOf(step) + 1} of ${TOUR_STEPS.length}`;
+    progress.textContent = step === "finish" ? "All set" : `Step ${TOUR_STEPS.indexOf(step) + 1} of 3`;
     demo.className = `tour-demo tour-demo--${step}`;
     practice.hidden = !isPracticeStep(step);
     readPractice.hidden = step !== "read";
@@ -137,9 +147,12 @@ export function initOnboarding() {
     heard.hidden = step !== "read" && step !== "snip";
     heard.disabled = step === "read" ? !evidence.readShortcut : !evidence.snipShortcut;
     change.hidden = !isPracticeStep(step);
-    back.hidden = step === "welcome" || step === "finish";
+    back.hidden = step === "read" || step === "finish";
     next.disabled = !canAdvance(step, evidence);
-    next.textContent = step === "welcome" ? "Start practice" : step === "finish" ? "Done" : "Next";
+    next.textContent = step === "finish" ? "Start using HereWord" : "Next";
+    narration.hidden = step === "finish";
+    hearAgain.hidden = step === "finish";
+    closeButton.hidden = step === "finish";
     renderVoiceButtons();
     if (isPracticeStep(step)) {
       const label = document.getElementById(`key-${step}`)?.textContent?.trim() || "your saved shortcut";
@@ -167,24 +180,49 @@ export function initOnboarding() {
     title.focus();
   }
 
-  function start() {
+  function start(fromSetup = false) {
     if (opened) return;
     opened = true;
+    autoStarted = fromSetup;
     evidence = emptyEvidence();
     card.hidden = false;
+    document.body.classList.add("onboarding-active");
     localStorage.removeItem(PENDING_KEY);
-    go("welcome");
+    go("read");
     title.focus();
   }
 
   function close() {
+    if (completionTimer !== undefined) window.clearTimeout(completionTimer);
+    completionTimer = undefined;
     stopNarration();
     opened = false;
     card.hidden = true;
+    document.body.classList.remove("onboarding-active");
     launch.focus();
   }
 
-  launch.addEventListener("click", start);
+  function complete() {
+    if (!opened || step !== "finish") return;
+    const hideSettings = autoStarted;
+    close();
+    autoStarted = false;
+    if (hideSettings) void getCurrentWindow().hide();
+  }
+
+  function finish() {
+    if (step === "finish") return;
+    step = "finish";
+    localStorage.setItem(COMPLETE_KEY, "1");
+    feedback.textContent = "";
+    render();
+    title.focus();
+    card.scrollIntoView({ behavior: "smooth", block: "start" });
+    const spoken = speakText(lessons.finish.spoken, false, complete);
+    completionTimer = window.setTimeout(complete, spoken ? 8000 : 1800);
+  }
+
+  launch.addEventListener("click", () => start());
   document.getElementById("tour-close")?.addEventListener("click", close);
   function toggleVoice() {
     voiceOn = !voiceOn;
@@ -204,8 +242,11 @@ export function initOnboarding() {
   next.addEventListener("click", () => {
     if (!canAdvance(step, evidence)) return;
     if (step === "finish") {
-      localStorage.setItem(COMPLETE_KEY, "1");
-      close();
+      complete();
+      return;
+    }
+    if (step === "snip") {
+      finish();
       return;
     }
     go(nextStep(step));
@@ -245,6 +286,7 @@ export function initOnboarding() {
     if (step === "snip" && evidence.snipShortcut) evidence.snipHeard = true;
     feedback.textContent = "Great. This action worked for you.";
     render();
+    if (step === "snip" && evidence.snipHeard) finish();
   });
 
   void listen<HotkeySlot>("hotkey-triggered", ({ payload }) => {
@@ -293,7 +335,16 @@ export function initOnboarding() {
         : setupStep === "accessibility" ? "setup-row-accessibility"
         : setupStep === "input-monitoring" || setupStep === "shortcuts" ? "setup-row-input" : "";
       for (const id of ["setup-row-engine", "setup-row-microphone", "setup-row-accessibility", "setup-row-input"]) {
-        document.getElementById(id)?.classList.toggle("setup-row--current", id === activeRow);
+        const row = document.getElementById(id);
+        if (row) {
+          row.hidden = id !== activeRow;
+          row.classList.toggle("setup-row--current", id === activeRow);
+        }
+      }
+      document.body.classList.toggle("onboarding-active", setupStep !== "complete" || opened);
+      if (setupStep !== "complete") {
+        const intro = document.getElementById("setup-intro");
+        if (intro) intro.textContent = setupInstructions[setupStep];
       }
       renderVoiceButtons();
       if (setupStep !== "complete" && guidedSetupActive && setupStep !== lastSpokenSetupStep && !opened) {
@@ -303,7 +354,7 @@ export function initOnboarding() {
       if (setupStep === "download" && !localStorage.getItem(COMPLETE_KEY)) {
         localStorage.setItem(PENDING_KEY, "1");
       } else if (setupStep === "complete" && localStorage.getItem(PENDING_KEY) === "1" && !opened) {
-        start();
+        start(true);
       }
     },
   };

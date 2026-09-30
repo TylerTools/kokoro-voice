@@ -3,7 +3,7 @@
  * explicit audible confirmation can complete a practice step. No dictated
  * words or selected text are persisted here.
  */
-export type TourStep = "welcome" | "read" | "dictate" | "snip" | "finish";
+export type TourStep = "read" | "dictate" | "snip" | "finish";
 export type PracticeStep = "read" | "dictate" | "snip";
 
 export type TourEvidence = {
@@ -14,7 +14,7 @@ export type TourEvidence = {
   snipHeard: boolean;
 };
 
-export const TOUR_STEPS: TourStep[] = ["welcome", "read", "dictate", "snip", "finish"];
+export const TOUR_STEPS: TourStep[] = ["read", "dictate", "snip", "finish"];
 
 export function emptyEvidence(): TourEvidence {
   return {
@@ -28,7 +28,6 @@ export function emptyEvidence(): TourEvidence {
 
 export function canAdvance(step: TourStep, evidence: TourEvidence): boolean {
   switch (step) {
-    case "welcome": return true;
     case "read": return evidence.readShortcut && evidence.readHeard;
     case "dictate": return evidence.dictationInserted;
     case "snip": return evidence.snipShortcut && evidence.snipHeard;

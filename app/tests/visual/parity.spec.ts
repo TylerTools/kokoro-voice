@@ -34,7 +34,7 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
     };
     if (deniedPermission && selectedPlatform === "macos") permissions[deniedPermission] = "required";
     const state = {
-      permissions, registered: initialRegistered, checksFail: false, pauseOtherMedia: false, prefsFail: false, offlineReady: initialOfflineReady,
+      permissions, registered: initialRegistered, checksFail: false, pauseOtherMedia: false, prefsFail: false, offlineReady: initialOfflineReady, hiddenWindow: false,
       emit(event: string, payload: unknown) {
         for (const handler of eventHandlers.get(event) ?? []) {
           callbacks.get(handler)?.({ event, id: 1, payload });
@@ -51,6 +51,7 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
     Object.assign(window, {
       __setupTest: state,
       __TAURI_INTERNALS__: {
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" }, windows: [{ label: "main" }], webviews: [{ label: "main" }] },
         callbacks,
         transformCallback(callback: (...args: unknown[]) => void) {
           const id = callbackId++;
@@ -73,6 +74,7 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
             return 1;
           }
           if (command.startsWith("plugin:event|")) return 1;
+          if (command === "plugin:window|hide") { state.hiddenWindow = true; return null; }
           if (command.startsWith("plugin:opener|")) return null;
           switch (command) {
             case "engine_status":
@@ -90,6 +92,12 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
               };
             case "hotkeys":
               return shortcutReport();
+            case "set_hotkey": {
+              const slot = String(args?.slot) as keyof typeof hotkeys;
+              const accelerator = String(args?.accelerator);
+              hotkeys[slot] = accelerator;
+              return { accelerator };
+            }
             case "retry_permission":
               return { available: args?.capability === "input-monitoring"
                 ? permissions.input_monitoring === "available"
@@ -213,9 +221,10 @@ test("guided tour waits for practice evidence", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.locator("#tour")).toBeHidden();
   await page.locator("#tour-launch").click();
-  await expect(page.locator("#tour-title")).toHaveText("Learn HereWord by trying it");
-  await page.locator("#tour-next").click();
   await expect(page.locator("#tour-title")).toHaveText("Read selected words");
+  await expect(page.locator("#tour-progress")).toHaveText("Step 1 of 3");
+  await expect(page.locator(".shortcut-row").first()).toBeHidden();
+  await expect(page.locator(".advanced")).toBeHidden();
   await expect(page.locator("#tour-next")).toBeDisabled();
   await page.locator("#tour-select-text").click();
   await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("hotkey-triggered", "read"));
@@ -239,11 +248,25 @@ test("guided tour waits for practice evidence", async ({ page }, testInfo) => {
   await expect(page.locator("#tour-heard")).toBeDisabled();
   await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("hotkey-triggered", "snip"));
   await page.locator("#tour-heard").click();
-  await page.locator("#tour-next").click();
-  await expect(page.locator("#tour-title")).toHaveText("You're ready to use HereWord");
+  await expect(page.locator("#tour-title")).toHaveText("You're all set");
+  await expect(page.locator("#tour-progress")).toHaveText("All set");
   await page.locator("#tour-next").click();
   await expect(page.locator("#tour")).toBeHidden();
+  await expect(page.locator(".shortcut-row").first()).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("hereword-tour-complete-v1"))).toBe("1");
+});
+
+test("a shortcut can be changed within the single visible lesson", async ({ page }) => {
+  await installTauriMock(page, "macos");
+  await page.addInitScript(() => localStorage.setItem("hereword-tour-voice-on", "0"));
+  await page.goto("/");
+  await page.locator("#tour-launch").click();
+  await expect(page.locator(".shortcut-row").first()).toBeHidden();
+  await page.locator("#tour-change").click();
+  await expect(page.locator("#tour-feedback")).toContainText("Press your preferred keys");
+  await page.keyboard.press("Control+Alt+Meta+R");
+  await expect(page.locator("#tour-shortcut")).toContainText("R");
+  await expect(page.locator("#tour-feedback")).toContainText("Shortcut saved");
 });
 
 test("new installation opens the tour after setup, while ready installations wait", async ({ page }) => {
@@ -253,7 +276,10 @@ test("new installation opens the tour after setup, while ready installations wai
     Object.assign(window, { __tourSpoken: spoken });
     Object.defineProperty(window, "speechSynthesis", {
       configurable: true,
-      value: { cancel() {}, speak(utterance: { text: string }) { spoken.push(utterance.text); } },
+      value: { cancel() {}, speak(utterance: { text: string }) {
+        spoken.push(utterance.text);
+        Object.assign(window, { __tourLastUtterance: utterance });
+      } },
     });
     Object.defineProperty(window, "SpeechSynthesisUtterance", {
       configurable: true,
@@ -264,6 +290,8 @@ test("new installation opens the tour after setup, while ready installations wai
   await expect(page.locator("#tour")).toBeHidden();
   await expect(page.locator("#setup")).toBeVisible();
   await expect(page.locator("#setup-row-engine")).toHaveClass(/setup-row--current/);
+  await expect(page.locator(".setup-steps li:visible")).toHaveCount(1);
+  await expect(page.locator(".shortcut-row").first()).toBeHidden();
   await page.locator("#setup-go").click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(1);
   expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken[0])).toContain("local speech models");
@@ -271,9 +299,49 @@ test("new installation opens the tour after setup, while ready installations wai
     (window as unknown as { __setupTest: { offlineReady: boolean } }).__setupTest.offlineReady = true;
     window.dispatchEvent(new Event("focus"));
   });
-  await expect(page.locator("#tour-title")).toHaveText("Learn HereWord by trying it");
+  await expect(page.locator("#tour-title")).toHaveText("Read selected words");
   await expect(page.locator("#tour")).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(2);
+});
+
+test("first-run guide says all set and closes setup after the last practice", async ({ page }) => {
+  await installTauriMock(page, "macos", undefined, true, false);
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: { cancel() {}, speak(utterance: { text: string }) {
+        Object.assign(window, { __tourLastUtterance: utterance });
+      } },
+    });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", {
+      configurable: true,
+      value: class { text: string; rate = 1; lang = ""; onend: (() => void) | null = null; onerror: (() => void) | null = null; constructor(text: string) { this.text = text; } },
+    });
+  });
+  await page.goto("/");
+  await page.locator("#setup-go").click();
+  await page.evaluate(() => {
+    (window as unknown as { __setupTest: { offlineReady: boolean } }).__setupTest.offlineReady = true;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(page.locator("#tour-title")).toHaveText("Read selected words");
+  await page.locator("#tour-select-text").click();
+  await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("hotkey-triggered", "read"));
+  await page.locator("#tour-heard").click();
+  await page.locator("#tour-next").click();
+  await page.locator("#tour-focus-dictate").click();
+  await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("hotkey-triggered", "dictate"));
+  await page.locator("#tour-dictate-text").fill("I can use HereWord");
+  await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("dictation-state", { state: "completed" }));
+  await expect(page.locator("#tour-next")).toBeEnabled();
+  await page.locator("#tour-next").click();
+  await page.evaluate(() => (window as unknown as { __setupTest: { emit: (event: string, payload: unknown) => void } }).__setupTest.emit("hotkey-triggered", "snip"));
+  await page.locator("#tour-heard").click();
+  await expect(page.locator("#tour-title")).toHaveText("You're all set");
+  expect(await page.evaluate(() => (window as unknown as { __tourLastUtterance: { text: string } }).__tourLastUtterance.text)).toBe("You're all set. HereWord is ready to use.");
+  await page.evaluate(() => (window as unknown as { __tourLastUtterance: { onend: () => void } }).__tourLastUtterance.onend());
+  await expect(page.locator("#tour")).toBeHidden();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __setupTest: { hiddenWindow: boolean } }).__setupTest.hiddenWindow)).toBe(true);
 });
 
 test("guided tour speaks each lesson and keeps captions visible when muted", async ({ page }) => {
@@ -292,17 +360,17 @@ test("guided tour speaks each lesson and keeps captions visible when muted", asy
   });
   await page.goto("/");
   await page.locator("#tour-launch").click();
-  await expect(page.locator("#tour-instruction")).toContainText("shown and spoken");
+  await expect(page.locator("#tour-instruction")).toContainText("Select the sample text");
   expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(1);
-  await page.locator("#tour-next").click();
+  await page.locator("#tour-hear-again").click();
   expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(2);
   await page.locator("#tour-narration").click();
   await expect(page.locator("#tour-narration")).toHaveAttribute("aria-pressed", "false");
-  await page.locator("#tour-back").click();
-  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(2);
-  await expect(page.locator("#tour-instruction")).toBeVisible();
   await page.locator("#tour-hear-again").click();
   expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(3);
+  await page.locator("#tour-close").click();
+  expect(await page.evaluate(() => (window as unknown as { __tourSpoken: string[] }).__tourSpoken.length)).toBe(3);
+  await expect(page.locator("#tour")).toBeHidden();
 });
 
 test("failed system check clears stale Ready status", async ({ page }) => {

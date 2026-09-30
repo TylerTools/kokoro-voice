@@ -372,6 +372,8 @@ the user has answered its permission prompt.
 While guided setup is active, each model and permission step has written and
 spoken guidance plus a visible cue for the current row. Speech uses the system
 voice so the instructions are available before local models are installed.
+Only the current setup requirement is shown; the normal settings controls are
+hidden until setup is complete.
 
 The desktop host keeps a low-frequency permission watcher alive until startup
 readiness succeeds; it does not abandon setup after an arbitrary timeout. The
@@ -389,8 +391,9 @@ polling must not overwrite action feedback with repeated readiness prose.
 ### Interactive first-run lessons
 
 After a new installation completes model and permission setup, the settings
-window opens a replayable Read, Dictate, and Snip tour. Existing installations
-can start it from Settings without an automatic interruption. Each lesson has
+window opens a replayable Read, Dictate, and Snip tour, one practice task at a
+time. Existing installations can start it from Settings without an automatic
+interruption. Each lesson has
 visible instructions, spoken guidance through the operating system voice,
 and a short animation. Voice can be muted or replayed; reduced-motion settings
 remove the animation without hiding information. The user may finish later.
@@ -399,8 +402,10 @@ The Read and Snip lessons require an observed physical shortcut event and the
 user's confirmation that speech was audible. Dictation requires its shortcut,
 successful completion, and new text in the focused practice box. Saving a
 shortcut or watching an animation is not accepted as proof that an action
-worked. The tour persists only completion and voice preference, never speech,
-selected text, or dictated text.
+worked. After Snip succeeds, HereWord shows and speaks "You're all set", then
+closes the first-run settings window. The app remains available from the menu
+bar; replaying the tour manually returns to Settings. The tour persists only
+completion and voice preference, never speech, selected text, or dictated text.
 
 ## Release channels and rollback
 

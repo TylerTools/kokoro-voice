@@ -27,8 +27,8 @@ describe("guided tour progress", () => {
   });
 
   it("keeps navigation within the tour", () => {
-    expect(previousStep("welcome")).toBe("welcome");
-    expect(nextStep("welcome")).toBe("read");
+    expect(previousStep("read")).toBe("read");
+    expect(nextStep("read")).toBe("dictate");
     expect(nextStep("snip")).toBe("finish");
     expect(nextStep("finish")).toBe("finish");
   });

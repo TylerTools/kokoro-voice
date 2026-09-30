@@ -311,6 +311,8 @@ select {
 .setup-msg { min-height: 1.2em; margin: 0 0 10px; overflow-wrap: anywhere; }
 
 .tour { scroll-margin-top: 18px; }
+.onboarding-active > section.card:not(#setup):not(#tour) { display: none; }
+.onboarding-active > .advanced, .onboarding-active > .version { display: none; }
 .tour-heading, .tour-actions { display: flex; align-items: center; gap: 9px; }
 .tour-heading { justify-content: space-between; margin-bottom: 10px; }
 .tour-heading button { min-width: 0; padding: 5px 9px; font-size: 12px; }
