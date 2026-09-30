@@ -85,6 +85,17 @@ class DictationControlTests(unittest.TestCase):
         self.assertEqual(rate, self.dictate.SAMPLE_RATE)
         self.assertEqual(len(audio), self.dictate.SAMPLE_RATE)
 
+    def test_preferred_microphone_falls_back_only_when_unavailable(self):
+        devices = [
+            {"name": "MacBook Air Microphone", "max_input_channels": 1},
+            {"name": "AirPods", "max_input_channels": 1},
+            {"name": "AirPods", "max_input_channels": 0},
+        ]
+        self.assertEqual(self.dictate.available_input_device("AirPods", devices), "AirPods")
+        self.assertEqual(self.dictate.available_input_device(1, devices), 1)
+        self.assertIsNone(self.dictate.available_input_device("AirPods", devices[:1]))
+        self.assertIsNone(self.dictate.available_input_device(2, devices))
+
 
 if __name__ == "__main__":
     unittest.main()

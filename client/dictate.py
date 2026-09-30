@@ -157,6 +157,22 @@ def _wav_bytes(frames, np, sf, max_seconds: float | None = None) -> bytes:
     return buf.getvalue()
 
 
+def available_input_device(requested: int | str | None, devices) -> int | str | None:
+    """Keep a preferred mic only while it is present as an input device."""
+    if requested is None:
+        return None
+    if isinstance(requested, int):
+        if 0 <= requested < len(devices) and devices[requested].get("max_input_channels", 0) > 0:
+            return requested
+        return None
+    if any(
+        item.get("name") == requested and item.get("max_input_channels", 0) > 0
+        for item in devices
+    ):
+        return requested
+    return None
+
+
 def record_until_stopped(
     session: str, device: int | str | None = None, live_preview: bool = False
 ) -> bytes:
@@ -189,6 +205,12 @@ def record_until_stopped(
     # microphone permission — no error, no prompt, just a hang that looks like
     # the app has frozen. Bound it, so a permissions problem reports itself.
     try:
+        if device is not None:
+            available = available_input_device(device, sd.query_devices())
+            if available is None:
+                print("STATUS preferred microphone unavailable; using system default",
+                      file=sys.stderr, flush=True)
+            device = available
         stream = sd.InputStream(device=device, samplerate=SAMPLE_RATE, channels=1,
                                 dtype="float32", callback=cb)
         stream.start()

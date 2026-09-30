@@ -525,9 +525,12 @@ async function initPrefs() {
     mic.appendChild(option);
   }
   if (savedMicrophone && !microphones.some((device) => device.name === savedMicrophone)) {
-    mic.value = "";
-    await invoke("set_microphone", { device: null });
-    detail.textContent = "Saved microphone is unavailable; using the system default.";
+    const unavailable = document.createElement("option");
+    unavailable.value = savedMicrophone;
+    unavailable.textContent = `${savedMicrophone} (unavailable)`;
+    unavailable.selected = true;
+    mic.appendChild(unavailable);
+    detail.textContent = "Preferred microphone is unavailable; dictation uses the system default until it reconnects.";
   }
   mic.onchange = () => { void invoke("set_microphone", { device: mic.value || null }); };
 
