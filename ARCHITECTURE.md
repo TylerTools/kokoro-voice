@@ -205,6 +205,8 @@ ellipsis because the recovery action is the reason the notice exists.
 3. The engine delegates synchronous Whisper inference to a lazy child process,
    while the HTTP request itself stays off the ASGI event loop so `/health`
    remains responsive.
+   Live preview starts after three seconds of recording. Short takes use only
+   the final pass, so their result cannot queue behind a redundant preview.
 4. Preview revisions are applied only while `text_backend.rs` proves target,
    process scope, owned text, selection, and caret invariants.
 5. Any focus/manual-edit/unsupported-control mismatch permanently falls back to

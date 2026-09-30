@@ -37,6 +37,7 @@ SAMPLE_RATE = 16000          # whisper's native rate — no resampling needed
 MAX_SECONDS = float(os.environ.get("DICTATE_MAX_SECONDS", "120"))
 PREVIEW_INTERVAL = float(os.environ.get("DICTATE_PREVIEW_INTERVAL", "0.55"))
 PREVIEW_MAX_SECONDS = float(os.environ.get("DICTATE_PREVIEW_WINDOW", "18"))
+PREVIEW_START_SECONDS = 3.0
 
 
 def _state_dir() -> str:
@@ -201,7 +202,11 @@ def record_until_stopped(
         if live_preview:
             def preview_worker():
                 last_samples = 0
-                next_preview = time.monotonic() + PREVIEW_INTERVAL
+                # A short take needs one authoritative pass. Starting a preview
+                # first makes its final pass wait behind redundant model work.
+                next_preview = time.monotonic() + max(
+                    PREVIEW_START_SECONDS, PREVIEW_INTERVAL
+                )
                 while not preview_stop.wait(max(0, next_preview - time.monotonic())):
                     snapshot = list(frames)
                     samples = sum(len(frame) for frame in snapshot)
@@ -368,6 +373,7 @@ def main() -> int:
         "transcribe_seconds": round(transcribe_seconds, 3),
         "realtime_ratio": round(transcribe_seconds / max(audio_seconds, 0.001), 4),
         "preview_interval": PREVIEW_INTERVAL,
+        "preview_start_seconds": PREVIEW_START_SECONDS,
     }, separators=(",", ":")), flush=True)
 
     # Single line so the desktop parser can treat stdout as one-record-per-line.
