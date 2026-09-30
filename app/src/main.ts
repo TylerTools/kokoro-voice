@@ -294,6 +294,8 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
   const step = nextSetupStep(report);
   if (step === "download" || step === "engine-starting" || step === "complete" || requestedStep === step) return;
   setupEffectInFlight = true;
+  // Keep this latch until system_check advances or the user explicitly retries.
+  // A permission API can report ready before the next setup check catches up.
   requestedStep = step;
   try {
     if (step === "microphone") {
@@ -302,7 +304,6 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
       if (!result.available && !result.requested) {
         await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
       } else if (result.available) {
-        requestedStep = null;
         window.setTimeout(() => { void refreshSetup(true); }, 0);
       }
     } else if (step === "accessibility") {
@@ -311,7 +312,6 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
       if (!result.available) {
         await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
       } else {
-        requestedStep = null;
         window.setTimeout(() => { void refreshSetup(true); }, 0);
       }
     } else if (step === "input-monitoring") {
@@ -320,7 +320,6 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
       if (!result.available) {
         await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
       } else {
-        requestedStep = null;
         window.setTimeout(() => { void refreshSetup(true); }, 0);
       }
     }
@@ -369,7 +368,6 @@ listen<{ pct: number; message: string }>("setup-progress", (e) => {
 });
 
 listen<boolean>("microphone-permission-changed", () => {
-  requestedStep = null;
   void refreshSetup(true);
 });
 

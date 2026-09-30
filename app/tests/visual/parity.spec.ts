@@ -2,8 +2,8 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 type Platform = "macos" | "windows";
 
-async function installTauriMock(page: Page, platform: Platform, denied?: "accessibility" | "input_monitoring", registered = true, offlineReady = true): Promise<void> {
-  await page.addInitScript(({ selectedPlatform, deniedPermission, initialRegistered, initialOfflineReady }) => {
+async function installTauriMock(page: Page, platform: Platform, denied?: "accessibility" | "input_monitoring", registered = true, offlineReady = true, retryReportsAvailable = false): Promise<void> {
+  await page.addInitScript(({ selectedPlatform, deniedPermission, initialRegistered, initialOfflineReady, initialRetryReportsAvailable }) => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
     const eventHandlers = new Map<string, number[]>();
     let callbackId = 1;
@@ -35,6 +35,7 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
     if (deniedPermission && selectedPlatform === "macos") permissions[deniedPermission] = "required";
     const state = {
       permissions, registered: initialRegistered, checksFail: false, pauseOtherMedia: false, prefsFail: false, offlineReady: initialOfflineReady, hiddenWindow: false,
+      retryReportsAvailable: initialRetryReportsAvailable, accessibilityRetries: 0,
       emit(event: string, payload: unknown) {
         for (const handler of eventHandlers.get(event) ?? []) {
           callbacks.get(handler)?.({ event, id: 1, payload });
@@ -99,9 +100,10 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
               return { accelerator };
             }
             case "retry_permission":
-              return { available: args?.capability === "input-monitoring"
+              if (args?.capability === "accessibility") state.accessibilityRetries += 1;
+              return { available: state.retryReportsAvailable || (args?.capability === "input-monitoring"
                 ? permissions.input_monitoring === "available"
-                : args?.capability === "accessibility" ? permissions.accessibility === "available" : true };
+                : args?.capability === "accessibility" ? permissions.accessibility === "available" : true) };
             case "storage_status":
               return {
                 engine_bytes: 0,
@@ -136,7 +138,7 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
         },
       },
     });
-  }, { selectedPlatform: platform, deniedPermission: denied, initialRegistered: registered, initialOfflineReady: offlineReady });
+  }, { selectedPlatform: platform, deniedPermission: denied, initialRegistered: registered, initialOfflineReady: offlineReady, initialRetryReportsAvailable: retryReportsAvailable });
 }
 
 async function installNarrationMock(page: Page): Promise<void> {
@@ -219,6 +221,19 @@ for (const denied of ["accessibility", "input_monitoring"] as const) {
     expect(await page.evaluate(() => localStorage.getItem("kokoro-guided-setup-active"))).toBeNull();
   });
 }
+
+test("a stale Accessibility check does not reopen permission setup", async ({ page }) => {
+  await installTauriMock(page, "macos", "accessibility", true, true, true);
+  await page.addInitScript(() => localStorage.setItem("kokoro-guided-setup-active", "1"));
+  await page.goto("/");
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __setupTest: { accessibilityRetries: number } }).__setupTest.accessibilityRetries,
+  )).toBeGreaterThan(0);
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() =>
+    (window as unknown as { __setupTest: { accessibilityRetries: number } }).__setupTest.accessibilityRetries,
+  )).toBe(1);
+});
 
 test("approved permissions still require shortcut registration", async ({ page }) => {
   await installTauriMock(page, "macos", undefined, false);
