@@ -2240,6 +2240,7 @@ fn dictation_start(app: &AppHandle) {
 
         let mut lines_out: Vec<String> = Vec::new();
         let mut startup_timed_out = false;
+        let mut released_before_ready = false;
         let mut final_inserted = false;
         let mut final_fallback_notice = false;
         let child_spawn_failed = child.is_err();
@@ -2277,14 +2278,21 @@ fn dictation_start(app: &AppHandle) {
 
                 // PortAudio may block forever while opening a denied or broken
                 // device. The child must prove that recording started.
-                match rx.recv_timeout(std::time::Duration::from_secs(8)) {
+                let microphone_opened_at = std::time::Instant::now();
+                // Bluetooth microphones may need to switch audio profiles
+                // before opening. Eight seconds killed the first attempt just
+                // as macOS was making the input available.
+                match rx.recv_timeout(std::time::Duration::from_secs(20)) {
                     Ok(line)
                         if dictation_protocol::parse(&line)
                             == dictation_protocol::Event::Recording =>
                     {
                         structured_log(
                             "dictation-recorder-ready",
-                            serde_json::json!({ "session": id }),
+                            serde_json::json!({
+                                "session": id,
+                                "open_ms": microphone_opened_at.elapsed().as_millis(),
+                            }),
                         );
                         set_player_mode(&app2, "recording");
                         set_dictation_status(&app2, &id, DictationStatus::Recording);
@@ -2306,6 +2314,7 @@ fn dictation_start(app: &AppHandle) {
                             })
                         });
                         if let Some((control, command)) = pending_control {
+                            released_before_ready = command == "stop";
                             let _ = send_dictation_command(&control, &id, command);
                         }
                     }
@@ -2587,7 +2596,14 @@ fn dictation_start(app: &AppHandle) {
             )
         }) {
             set_dictation_status(&app2, &id, DictationStatus::Cancelled);
-            show_player_notice(&app2, "No speech heard. Hold the shortcut while speaking.");
+            show_player_notice(
+                &app2,
+                if released_before_ready {
+                    "The microphone was still opening when you released. Try again."
+                } else {
+                    "No speech heard. Hold the shortcut while speaking."
+                },
+            );
             structured_log(
                 "dictation-failed",
                 serde_json::json!({ "session": id, "code": "no-speech" }),
