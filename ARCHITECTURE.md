@@ -119,9 +119,12 @@ accepted registration. Only `hotkey-triggered` proves the end-to-end input path.
    or resumes active playback.
 4. The client chunks text, pipelines authenticated `/speak` requests, and plays
    audio while preparing the next chunk. It buffers the first two chunks to
-   cover cold synthesis and retains one audio output stream for the full
-   reading, avoiding Bluetooth restarts at each chunk. Completion drains the
-   stream; cancellation aborts it without playing queued audio.
+   cover cold synthesis and reuses one audio output stream while the operating
+   system's default output stays the same. On macOS it checks the live Core
+   Audio default during playback; a change refreshes PortAudio's cached device
+   list and reopens the stream on the new default, discarding audio queued for
+   the old route. Completion drains the stream; cancellation aborts it without
+   playing queued audio.
 5. The floating player controls pause/resume/stop without stealing focus.
 
 The shared player panel also shows recording, transcription, and short notices.
