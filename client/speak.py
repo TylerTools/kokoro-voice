@@ -24,7 +24,6 @@ Only stdlib — no pip install needed on the client side.
 from __future__ import annotations
 
 import argparse
-import ctypes
 import glob
 import json
 import os
@@ -131,50 +130,6 @@ LOCKFILE = os.path.join(STATE_DIR, "playback.lock")
 _CANCELLED = threading.Event()
 _OUTPUT_STREAM = None
 _OUTPUT_FORMAT = None
-_OUTPUT_DEVICE = None
-_OUTPUT_SYSTEM_DEVICE_ID = None
-_CORE_AUDIO_GETTER = None
-_PORTAUDIO_REFRESHED_ON_START = False
-
-
-class _AudioObjectPropertyAddress(ctypes.Structure):
-    _fields_ = [
-        ("selector", ctypes.c_uint32),
-        ("scope", ctypes.c_uint32),
-        ("element", ctypes.c_uint32),
-    ]
-
-
-def _mac_default_output_id() -> int | None:
-    """Read the live Core Audio default; PortAudio caches its device list."""
-    global _CORE_AUDIO_GETTER
-    if not IS_MAC:
-        return None
-    try:
-        if _CORE_AUDIO_GETTER is None:
-            core_audio = ctypes.CDLL(
-                "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"
-            )
-            getter = core_audio.AudioObjectGetPropertyData
-            getter.argtypes = [
-                ctypes.c_uint32, ctypes.POINTER(_AudioObjectPropertyAddress),
-                ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32),
-                ctypes.c_void_p,
-            ]
-            getter.restype = ctypes.c_int32
-            _CORE_AUDIO_GETTER = getter
-        address = _AudioObjectPropertyAddress(
-            int.from_bytes(b"dOut", "big"), int.from_bytes(b"glob", "big"), 0
-        )
-        size = ctypes.c_uint32(ctypes.sizeof(ctypes.c_uint32))
-        device = ctypes.c_uint32()
-        status = _CORE_AUDIO_GETTER(
-            1, ctypes.byref(address), 0, None,
-            ctypes.byref(size), ctypes.byref(device)
-        )
-        return device.value if status == 0 and device.value else None
-    except (AttributeError, OSError):
-        return None
 
 
 class PlaybackCancelled(Exception):
@@ -611,11 +566,9 @@ def toggle_playback() -> str:
 
 def _close_output_stream(*, abort: bool = False) -> None:
     """Drain completed speech, but discard queued audio on cancellation."""
-    global _OUTPUT_STREAM, _OUTPUT_FORMAT, _OUTPUT_DEVICE, _OUTPUT_SYSTEM_DEVICE_ID
+    global _OUTPUT_STREAM, _OUTPUT_FORMAT
     stream, _OUTPUT_STREAM = _OUTPUT_STREAM, None
     _OUTPUT_FORMAT = None
-    _OUTPUT_DEVICE = None
-    _OUTPUT_SYSTEM_DEVICE_ID = None
     if stream is not None:
         try:
             if abort:
@@ -627,14 +580,12 @@ def _close_output_stream(*, abort: bool = False) -> None:
 
 
 def _play_file(path: str) -> None:
-    global _OUTPUT_STREAM, _OUTPUT_FORMAT, _OUTPUT_DEVICE, _OUTPUT_SYSTEM_DEVICE_ID
-    global _PORTAUDIO_REFRESHED_ON_START
+    global _OUTPUT_STREAM, _OUTPUT_FORMAT
     if _CANCELLED.is_set():
         raise PlaybackCancelled
     if IS_MAC or IS_WIN:
-        # Reuse the stream while the system output stays the same. A stream is
-        # bound to its opening device, so reopen it when macOS/Windows changes
-        # the default (for example when AirPods connect during a long reading).
+        # Let the OS choose the output when a playback stream opens.
+        # Reuse it across speech chunks to avoid gaps between chunks.
         import sounddevice as sd
         import soundfile as sf
         samples, sample_rate = sf.read(path, dtype="float32", always_2d=True)
@@ -643,40 +594,13 @@ def _play_file(path: str) -> None:
         for offset in range(0, len(samples), 2048):
             if _CANCELLED.is_set():
                 raise PlaybackCancelled
-            system_output = _mac_default_output_id()
-            if IS_MAC and not _PORTAUDIO_REFRESHED_ON_START:
-                # Audio devices can change while the first speech chunk is
-                # synthesized, after PortAudio has been imported. Refresh its
-                # cached default before opening the first stream.
-                sd._terminate()
-                sd._initialize()
-                _PORTAUDIO_REFRESHED_ON_START = True
-            system_changed = (
-                _OUTPUT_STREAM is not None and system_output is not None
-                and _OUTPUT_SYSTEM_DEVICE_ID is not None
-                and system_output != _OUTPUT_SYSTEM_DEVICE_ID
-            )
-            if system_changed:
-                _close_output_stream(abort=True)
-                # PortAudio's default index remains stale after a macOS route
-                # change. This client owns its only stream, so refresh its
-                # device list before opening the new system default.
-                sd._terminate()
-                sd._initialize()
-            default_output = sd.default.device[1]
-            if (_OUTPUT_STREAM is None or _OUTPUT_FORMAT != audio_format
-                    or _OUTPUT_DEVICE != default_output):
-                # On route changes, queued frames belong to the old device.
-                # Drop those frames instead of draining them through speakers
-                # the person has just switched away from.
-                _close_output_stream(abort=_OUTPUT_DEVICE != default_output)
+            if _OUTPUT_STREAM is None or _OUTPUT_FORMAT != audio_format:
+                _close_output_stream()
                 _OUTPUT_STREAM = sd.OutputStream(
-                    device=default_output, samplerate=sample_rate,
+                    samplerate=sample_rate,
                     channels=audio_format[1], dtype="float32", latency="high",
                 )
                 _OUTPUT_FORMAT = audio_format
-                _OUTPUT_DEVICE = default_output
-                _OUTPUT_SYSTEM_DEVICE_ID = system_output
                 _OUTPUT_STREAM.start()
             try:
                 _OUTPUT_STREAM.write(samples[offset:offset + 2048])

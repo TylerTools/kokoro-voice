@@ -35,7 +35,6 @@ class SpeakPlaybackTests(unittest.TestCase):
 
     def setUp(self):
         self.speak._close_output_stream(abort=True)
-        self.speak._PORTAUDIO_REFRESHED_ON_START = False
         self.speak._CANCELLED.clear()
         for path in pathlib.Path(self.temp.name).iterdir():
             if path.name != "playback.lock":
@@ -51,58 +50,21 @@ class SpeakPlaybackTests(unittest.TestCase):
         stream = mock.Mock()
         device = types.SimpleNamespace(
             OutputStream=mock.Mock(return_value=stream),
-            default=types.SimpleNamespace(device=(0, 1)),
-            _terminate=mock.Mock(),
-            _initialize=mock.Mock(),
         )
         files = types.SimpleNamespace(read=mock.Mock(side_effect=[
             (Frames([0.1, 0.2]), 24000), (Frames([0.3, 0.4]), 24000)
         ]))
-        with (mock.patch.dict("sys.modules", sounddevice=device, soundfile=files),
-              mock.patch.object(self.speak, "_mac_default_output_id", return_value=10)):
+        with mock.patch.dict("sys.modules", sounddevice=device, soundfile=files):
             self.speak._play_file("first.wav")
             self.speak._play_file("second.wav")
             self.speak._close_output_stream()
         device.OutputStream.assert_called_once()
+        self.assertNotIn("device", device.OutputStream.call_args.kwargs)
         stream.start.assert_called_once()
         self.assertEqual(stream.write.call_args_list, [mock.call([0.1, 0.2]), mock.call([0.3, 0.4])])
         stream.stop.assert_called_once()
         stream.close.assert_called_once()
         stream.abort.assert_not_called()
-
-    def test_system_output_change_refreshes_cached_portaudio_default(self):
-        class Frames(list):
-            shape = (2, 1)
-
-        old_stream = mock.Mock()
-        new_stream = mock.Mock()
-        current = [0, 1]
-        system_output = [10]
-        def refresh_devices():
-            current[1] = 1 if system_output[0] == 10 else 2
-        device = types.SimpleNamespace(
-            OutputStream=mock.Mock(side_effect=[old_stream, new_stream]),
-            default=types.SimpleNamespace(device=current),
-            _terminate=mock.Mock(),
-            _initialize=mock.Mock(side_effect=refresh_devices),
-        )
-        files = types.SimpleNamespace(read=mock.Mock(side_effect=[
-            (Frames([0.1, 0.2]), 24000), (Frames([0.3, 0.4]), 24000)
-        ]))
-        with (mock.patch.dict("sys.modules", sounddevice=device, soundfile=files),
-              mock.patch.object(self.speak, "_mac_default_output_id", side_effect=lambda: system_output[0])):
-            self.speak._play_file("first.wav")
-            system_output[0] = 11
-            self.speak._play_file("second.wav")
-            self.speak._close_output_stream()
-
-        self.assertEqual(device.OutputStream.call_args_list[0].kwargs["device"], 1)
-        self.assertEqual(device.OutputStream.call_args_list[1].kwargs["device"], 2)
-        old_stream.abort.assert_called_once()
-        old_stream.stop.assert_not_called()
-        new_stream.stop.assert_called_once()
-        self.assertEqual(device._terminate.call_count, 2)
-        self.assertEqual(device._initialize.call_count, 2)
 
     def test_cancellation_discards_buffered_audio_instead_of_draining_it(self):
         stream = mock.Mock()
