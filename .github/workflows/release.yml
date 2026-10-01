@@ -130,6 +130,18 @@ jobs:
               exit 1
             fi
           done
+      - name: Verify Apple notarization credentials
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool history \
+            --apple-id "${APPLE_ID}" \
+            --password "${APPLE_PASSWORD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            >/dev/null
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -146,7 +158,7 @@ jobs:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseDraft: true
           prerelease: true
-          uploadUpdaterJson: false
+          includeUpdaterJson: false
           args: --target aarch64-apple-darwin --config src-tauri/tauri.updater-release.conf.json
       - uses: actions/upload-artifact@v4
         with:
