@@ -1,8 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "HereWord",
-  "version": "2.1.1-beta.10",
+  "version": "2.1.1-beta.29",
   "identifier": "com.tylertools.kokoro-voice-2-1",
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI5RTg3RDdBMDEzMkFGNjIKUldSaXJ6SUJlbjNvS2NaR3ZBdXJlY1JvLzJ3VEhTVFRXTkRwSEpBQ1kzNVJaLzRjTGI1OEJsMUsK"
+    }
+  },
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -72,7 +77,8 @@
       "../../requirements-windows.txt": "engine-src/requirements-windows.txt",
       "../../requirements-macos.lock": "engine-src/requirements-macos.lock",
       "../../requirements-windows.lock": "engine-src/requirements-windows.lock",
-      "../../client/*.py": "engine-src/client/"
+      "../../client/*.py": "engine-src/client/",
+      "../../scripts/release/release_manager.py": "release-manager.py"
     }
   }
 }

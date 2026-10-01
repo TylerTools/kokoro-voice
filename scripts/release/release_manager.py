@@ -433,16 +433,14 @@ def replace_installed_app(installed: Path, destination: Path, staged: Path) -> P
     return previous
 
 
-def promote(
+def preflight(
     artifact: Path,
     *,
     allow_ad_hoc: bool,
     allow_signing_transition: bool = False,
     config: dict,
 ) -> dict:
-    destination = Path(config["stable_app"])
     stable = installed_stable_path(config)
-    vault = Path(config["vault"])
     stable_meta = verify_bundle(stable, STABLE_IDENTIFIER, config)
     artifact_meta = verify_bundle(artifact, STABLE_IDENTIFIER, config)
     require_audio_input_entitlement(artifact, config)
@@ -467,6 +465,22 @@ def promote(
     if stable_meta["team_id"] and artifact_meta["team_id"] != stable_meta["team_id"]:
         raise ReleaseError("the update signing team does not match installed Stable")
     require_compatible_update_identity(stable_meta, artifact_meta)
+    return {"installed": stable_meta, "artifact": artifact_meta}
+
+
+def promote(
+    artifact: Path,
+    *,
+    allow_ad_hoc: bool,
+    allow_signing_transition: bool = False,
+    config: dict,
+) -> dict:
+    checked = preflight(artifact, allow_ad_hoc=allow_ad_hoc,
+                        allow_signing_transition=allow_signing_transition, config=config)
+    stable_meta, artifact_meta = checked["installed"], checked["artifact"]
+    destination = Path(config["stable_app"])
+    stable = installed_stable_path(config)
+    vault = Path(config["vault"])
 
     archive = release_directory(vault, "previous", stable_meta["version"])
     archived_app = archive / stable.name
@@ -618,6 +632,8 @@ def main(argv: list[str] | None = None) -> int:
     promote_parser.add_argument("app", type=Path)
     promote_parser.add_argument("--allow-ad-hoc", action="store_true")
     promote_parser.add_argument("--allow-signing-transition", action="store_true")
+    preflight_parser = subcommands.add_parser("preflight", help="check a Stable update without installing")
+    preflight_parser.add_argument("app", type=Path)
     promote_parser.add_argument(
         "--defer-accessibility-check",
         action="store_true",
@@ -640,6 +656,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 result = verify_bundle(args.app, expected, config)
                 require_audio_input_entitlement(args.app, config)
+            elif args.command == "preflight":
+                result = preflight(args.app, allow_ad_hoc=False, config=config)
             elif args.command == "promote":
                 if args.defer_accessibility_check:
                     config["skip_accessibility"] = True

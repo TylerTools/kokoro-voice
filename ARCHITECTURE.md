@@ -118,8 +118,26 @@ accepted registration. Only `hotkey-triggered` proves the end-to-end input path.
    selection is streamed to `client/speak.py` over stdin; no selection pauses
    or resumes active playback.
 4. The client chunks text, pipelines authenticated `/speak` requests, and plays
-   audio while preparing the next chunk.
+   audio while preparing the next chunk. It buffers the first two chunks to
+   cover cold synthesis and opens the operating system's default output. It
+   reuses one stream across chunks to avoid gaps. A new reading opens a new
+   stream using the then-current system default. Completion drains the stream;
+   cancellation aborts it without playing queued audio.
 5. The floating player controls pause/resume/stop without stealing focus.
+
+The shared player panel also shows recording, transcription, and short notices.
+Its drag handle moves the actual native panel and saves its position in the
+app-owned configuration directory. Each state has a close button: closing
+playback stops speech, closing recording/transcription cancels that session,
+and closing a notice dismisses it. Moving or closing the panel does not
+change its non-activating level, Space membership, or the focused editor.
+
+On macOS, `media_controls.rs` and `media_controls_macos.m` register AirPods and
+system media play, pause, toggle, and stop commands with MPRemoteCommandCenter.
+They use the same desktop PlaybackManager as the floating player. Generic
+Now Playing metadata contains no selected text. Paused speech retains ownership
+so the next accessory press resumes the same session; finished or stopped speech
+clears metadata and disables commands. Candidate registers no media handlers.
 
 On macOS the player webview is hosted in a borderless, non-activating native
 panel rather than Tauri's ordinary window. Each show operation assigns its
@@ -137,6 +155,45 @@ panel's Space assignment and can flood the event log without restoring UI.
 
 The producer and player share stop state. Stopping only the current audio
 process is incorrect because a later synthesized chunk would restart playback.
+
+### External media interruption
+
+The opt-in **Quiet other audio while recording or speaking** preference is
+decoded by `preferences.rs`. `media_focus.rs` owns shared interruption leases:
+Read, Snip speech, and voice preview hold a lease until their speech child
+exits; Dictate acquires before microphone startup and releases at TRANSCRIBING
+(microphone closed), or on cancellation, startup failure, and child exit.
+Overlapping actions restore media only after the last lease ends. A speech
+session paused in HereWord retains its lease until stopped or completed.
+Graceful quit and the signal shutdown path restore owned paused media once.
+
+Platform adapters stay under `media_focus/`. macOS uses its active Now Playing
+player through the system JXA host and MediaRemote; Windows enumerates sessions
+published through System Media Transport Controls. Unsupported sound sources
+cannot be paused. macOS pauses its active Now Playing player. A private muted
+Core Audio process tap (macOS 14.2+) quiets other audio sources; the tap excludes
+HereWord and its descendant clients, refreshes the process list during a lease,
+and is destroyed before paused media resumes. Audio is never read, stored, or
+forwarded. Newly started sources join the quieting on the next observation.
+Unsupported media silenced by the tap continues advancing. No master-volume
+changes, drivers, or new runtime downloads are involved. System audio permission
+can be required, and OS failures are logged by numeric status without metadata.
+Windows uses temporary WASAPI session mutes across active output devices,
+excluding HereWord's process tree and preserving prior mutes and observed manual
+unmutes. Exclusive-mode or driver-bypassing audio may not expose a controllable
+session. All quieting shares the same overlap and shutdown lease lifecycle.
+Windows session mutes are owned by a passive helper mode of the same executable,
+which registers no UI, engine, or input controller. Its parent pipe closes on
+graceful shutdown or a crash; EOF restores owned mutes before the helper exits.
+
+Only playing media is paused; explicit play/pause commands avoid toggle races.
+The adapters check player, track, and playback state before every command and
+the host observes changes during interruption. An observed manual resume,
+player/track switch, disappearance, or failed query revokes resume ownership.
+Already-paused media is never started. Playback changes between observations
+cannot always be detected; private macOS APIs may stop working after OS updates.
+Media identity/metadata remains in memory and is never logged or persisted.
+
 The transport is deliberately plain and compact. Action notices use a wider,
 taller two-line surface; they must never inherit the transport's one-line
 ellipsis because the recovery action is the reason the notice exists.
@@ -144,16 +201,29 @@ ellipsis because the recovery action is the reason the notice exists.
 ## Dictation path
 
 1. DictateStart captures the focused accessibility target before opening UI.
-2. `client/dictate.py` records 16 kHz mono audio in memory and emits a small
-   stdout protocol (`READY`, previews, `TRANSCRIBING`, final text, errors).
+2. `client/dictate.py` records mono audio at the microphone's native rate in
+   memory; the engine converts it to 16 kHz for Whisper. The client emits a small
+   stdout protocol (microphone opening phases, `RECORDING`, previews,
+   `TRANSCRIBING`, final text, errors). Opening phases contain no audio or text
+   and help identify a stalled device call.
+   With no preferred microphone saved, recording follows the operating system's
+   default input. A saved microphone is used while present; if it disconnects,
+   recording uses the system default without erasing the preference. Selecting
+   **System default** in Settings clears that preference. The microphone opens
+   before HereWord pauses other media, so audio focus cannot delay input startup.
+   On macOS, system-default input uses AVAudioEngine because PortAudio can hang
+   inside AudioDeviceStart even while the microphone works in other apps.
 3. The engine delegates synchronous Whisper inference to a lazy child process,
    while the HTTP request itself stays off the ASGI event loop so `/health`
    remains responsive.
+   Live preview starts after three seconds of recording. Short takes use only
+   the final pass, so their result cannot queue behind a redundant preview.
 4. Preview revisions are applied only while `text_backend.rs` proves target,
    process scope, owned text, selection, and caret invariants.
 5. Any focus/manual-edit/unsupported-control mismatch permanently falls back to
    clipboard for that session.
-6. Final text is always copied as recovery; secure fields are rejected.
+6. Final text is always copied as recovery; a clipboard fallback keeps its
+   paste instruction visible until dismissed. Secure fields are rejected.
 
 The child protocol is stdout-only. Its stderr must not be an unread pipe because
 a full pipe can deadlock a long recording.
@@ -234,6 +304,17 @@ owns its namespace without duplicating the multi-gigabyte model. The installed
 bundle is replaceable and read-only. Models and the private environment survive
 application updates.
 
+`app_updates.rs` owns user-requested update checks and verified downloads.
+Only Stable builds with a compiled updater public key enable installation;
+Candidate remains passive. HTTPS metadata selects a version, and Tauri's
+detached signature authenticates the archive. macOS checks the archive's actual
+version and compatible Developer ID identity before starting the bundled
+`release_manager.py` through the external Python environment. The existing
+transaction retains the previous app and rolls back if fresh version, engine,
+or permission readiness fails. Windows uses the signed NSIS updater and stops
+managed processes in the updater's before-exit hook. Signing setup and draft
+publication boundaries are documented in `scripts/release/UPDATES.md`.
+
 Whisper is not loaded at general application startup. The main engine warms a
 recyclable `tts_worker.py` child and launches `stt_worker.py` only for voiced
 Dictation audio. A serialized parent/worker exchange accounts for each active request; the
@@ -288,6 +369,12 @@ Setup resumes after reopening and verifies the new process before showing Ready.
 Screen Recording remains a just-in-time approval. Microphone authorization is
 an explicit setup and release gate because macOS can return silent audio before
 the user has answered its permission prompt.
+While guided setup is active, each model and permission step has written and
+spoken guidance plus a visible cue for the current row. Spoken instructions
+are bundled audio rendered with HereWord's default voice, so the same natural
+voice works before local models are installed and does not depend on a network.
+Only the current setup requirement is shown; the normal settings controls are
+hidden until setup is complete.
 
 The desktop host keeps a low-frequency permission watcher alive until startup
 readiness succeeds; it does not abandon setup after an arbitrary timeout. The
@@ -301,6 +388,25 @@ documentation: shortcut bindings and voice/dictation controls remain visible,
 while privacy explanation, storage, diagnostics, and local-data removal stay
 under Advanced. Routine health is expressed once in the header; background
 polling must not overwrite action feedback with repeated readiness prose.
+
+### Interactive first-run lessons
+
+After a new installation completes model and permission setup, the settings
+window opens a replayable Read, Dictate, and Snip tour, one practice task at a
+time. Existing installations can start it from Settings without an automatic
+interruption. Each lesson has
+visible instructions, bundled spoken guidance in HereWord's voice,
+and a short animation. Voice can be muted or replayed; reduced-motion settings
+remove the animation without hiding information. The user may finish later.
+
+The Read and Snip lessons require an observed physical shortcut event and the
+user's confirmation that speech was audible. Dictation requires its shortcut,
+successful completion, and new text in the focused practice box. Saving a
+shortcut or watching an animation is not accepted as proof that an action
+worked. After Snip succeeds, HereWord shows and speaks "You're all set", then
+closes the first-run settings window. The app remains available from the menu
+bar; replaying the tour manually returns to Settings. The tour persists only
+completion and voice preference, never speech, selected text, or dictated text.
 
 ## Release channels and rollback
 
@@ -361,6 +467,9 @@ The Quartz controller requires Input Monitoring to receive key events.
 Accessibility is separately required to read selections and insert dictated
 text. Microphone access is required before dictation may start. The app checks
 all three and must not report runtime readiness while any one is unavailable.
+On macOS 14 and later, recording consent is queried and requested through
+`AVAudioApplication`; macOS 13 uses `AVCaptureDevice`. Neither path captures
+audio while asking for permission.
 
 Developer builds are ad-hoc signed, so their designated requirement is the
 binary CDHash. Replacing the bundle changes that identity and can invalidate

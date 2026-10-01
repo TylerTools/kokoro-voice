@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
+import { initOnboarding } from "./onboarding";
 import {
   nextSetupStep,
   permissionReady,
@@ -54,6 +55,57 @@ const statusEl = document.getElementById("status") as HTMLDivElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
 const detail = document.getElementById("detail") as HTMLSpanElement;
 const SHORTCUT_SETUP_MESSAGE = "Finish setup to enable shortcuts. HereWord checks approvals automatically.";
+
+const updateStatus = document.getElementById("update-status")!;
+const checkUpdateButton = document.getElementById("check-update") as HTMLButtonElement;
+const installUpdateButton = document.getElementById("install-update") as HTMLButtonElement;
+const updateProgress = document.getElementById("update-progress") as HTMLProgressElement;
+
+checkUpdateButton.addEventListener("click", async () => {
+  checkUpdateButton.disabled = true;
+  installUpdateButton.hidden = true;
+  updateStatus.textContent = "Checking for updates…";
+  try {
+    const result = await invoke<{ configured: boolean; version: string | null }>("check_for_update");
+    updateStatus.textContent = !result.configured ? "Updates aren't available in this build."
+      : result.version ? `HereWord ${result.version} is available.` : "You're up to date.";
+    installUpdateButton.hidden = !result.version;
+  } catch (error) {
+    updateStatus.textContent = String(error);
+  } finally {
+    checkUpdateButton.disabled = false;
+  }
+});
+
+installUpdateButton.addEventListener("click", async () => {
+  checkUpdateButton.disabled = true;
+  installUpdateButton.disabled = true;
+  updateProgress.hidden = false;
+  updateProgress.removeAttribute("value");
+  updateStatus.textContent = "Downloading and verifying the update…";
+  try {
+    await invoke("install_update");
+    updateStatus.textContent = "Installing the update. HereWord will restart shortly.";
+  } catch (error) {
+    updateStatus.textContent = String(error);
+    checkUpdateButton.disabled = false;
+    installUpdateButton.disabled = false;
+    updateProgress.hidden = true;
+  }
+});
+
+listen<{ received: number; total: number | null }>("update-progress", ({ payload }) => {
+  if (payload.total) {
+    updateProgress.max = payload.total;
+    updateProgress.value = payload.received;
+  }
+});
+listen<string>("update-failed", ({ payload }) => {
+  updateStatus.textContent = payload;
+  checkUpdateButton.disabled = false;
+  installUpdateButton.disabled = false;
+  updateProgress.hidden = true;
+});
 let currentAppInfo: AppInfo = {
   app_version: "",
   build_revision: "development",
@@ -162,6 +214,7 @@ let setupReport: SetupReport | null = null;
 let requestedStep: SetupStep | null = null;
 let setupRefreshInFlight = false;
 let setupEffectInFlight = false;
+const onboarding = initOnboarding();
 
 function setSetupActive(active: boolean): void {
   guidedSetupActive = active;
@@ -232,6 +285,7 @@ function renderSetup(report: SetupReport): SetupStep {
   if (step === "shortcuts") {
     setupMessage.textContent = "Permissions are approved. HereWord is checking shortcuts. If this continues, quit and reopen HereWord; setup will resume and check again.";
   }
+  onboarding.onSetupStep(step, guidedSetupActive);
   return step;
 }
 
@@ -240,6 +294,8 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
   const step = nextSetupStep(report);
   if (step === "download" || step === "engine-starting" || step === "complete" || requestedStep === step) return;
   setupEffectInFlight = true;
+  // Keep this latch until system_check advances or the user explicitly retries.
+  // A permission API can report ready before the next setup check catches up.
   requestedStep = step;
   try {
     if (step === "microphone") {
@@ -248,7 +304,6 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
       if (!result.available && !result.requested) {
         await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
       } else if (result.available) {
-        requestedStep = null;
         window.setTimeout(() => { void refreshSetup(true); }, 0);
       }
     } else if (step === "accessibility") {
@@ -257,7 +312,6 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
       if (!result.available) {
         await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
       } else {
-        requestedStep = null;
         window.setTimeout(() => { void refreshSetup(true); }, 0);
       }
     } else if (step === "input-monitoring") {
@@ -266,7 +320,6 @@ async function advanceGuidedSetup(report: SetupReport): Promise<void> {
       if (!result.available) {
         await openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
       } else {
-        requestedStep = null;
         window.setTimeout(() => { void refreshSetup(true); }, 0);
       }
     }
@@ -315,7 +368,6 @@ listen<{ pct: number; message: string }>("setup-progress", (e) => {
 });
 
 listen<boolean>("microphone-permission-changed", () => {
-  requestedStep = null;
   void refreshSetup(true);
 });
 
@@ -416,7 +468,7 @@ listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
 const SPEEDS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 
 async function initPrefs() {
-  const prefs = await invoke<{ voice: string; speed: number; cue_enabled?: boolean; cue_volume?: number; live_preview?: boolean }>("get_prefs");
+  const prefs = await invoke<{ voice: string; speed: number; cue_enabled?: boolean; cue_volume?: number; live_preview?: boolean; pause_other_media?: boolean }>("get_prefs");
 
   const cueEnabled = document.getElementById("cue-enabled") as HTMLInputElement;
   const cueVolume = document.getElementById("cue-volume") as HTMLInputElement;
@@ -441,6 +493,19 @@ async function initPrefs() {
   livePreview.onchange = () => {
     void invoke("set_prefs", { livePreview: livePreview.checked });
   };
+  const pauseOtherMedia = document.getElementById("pause-other-media") as HTMLInputElement;
+  pauseOtherMedia.checked = prefs.pause_other_media === true;
+  pauseOtherMedia.onchange = async () => {
+    pauseOtherMedia.disabled = true;
+    try {
+      await invoke("set_prefs", { pauseOtherMedia: pauseOtherMedia.checked });
+    } catch {
+      pauseOtherMedia.checked = !pauseOtherMedia.checked;
+      detail.textContent = "Couldn’t save the media setting. Try again.";
+    } finally {
+      pauseOtherMedia.disabled = false;
+    }
+  };
   const launchAtLogin = document.getElementById("launch-at-login") as HTMLInputElement;
   launchAtLogin.checked = await invoke<boolean>("launch_at_login_status");
   launchAtLogin.onchange = async () => {
@@ -461,9 +526,12 @@ async function initPrefs() {
     mic.appendChild(option);
   }
   if (savedMicrophone && !microphones.some((device) => device.name === savedMicrophone)) {
-    mic.value = "";
-    await invoke("set_microphone", { device: null });
-    detail.textContent = "Saved microphone is unavailable; using the system default.";
+    const unavailable = document.createElement("option");
+    unavailable.value = savedMicrophone;
+    unavailable.textContent = `${savedMicrophone} (unavailable)`;
+    unavailable.selected = true;
+    mic.appendChild(unavailable);
+    detail.textContent = "Preferred microphone is unavailable; dictation uses the system default until it reconnects.";
   }
   mic.onchange = () => { void invoke("set_microphone", { device: mic.value || null }); };
 
@@ -584,6 +652,7 @@ document.querySelectorAll<HTMLButtonElement>("button[data-rec]").forEach((btn) =
         const currentLabel = current[slot];
         const kbd = document.getElementById(`key-${slot}`);
         if (kbd) kbd.textContent = pretty(currentLabel);
+        window.dispatchEvent(new CustomEvent("hereword-hotkey-saved", { detail: { slot } }));
         awaitingHotkeyVerification = slot;
         detail.textContent = `${pretty(saved.accelerator)} registered for ${slot}. Press it now to verify.`;
       } catch (err) {

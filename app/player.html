@@ -4,8 +4,7 @@
     <meta charset="UTF-8" />
     <title>Playing</title>
     <style>
-      /* A floating control, not a document: no scrollbars, no selection, and
-         the whole surface is draggable except the buttons themselves. */
+      /* A floating control, not a document: no scrollbars or text selection. */
       html, body {
         margin: 0; padding: 0; height: 100%; overflow: hidden;
         background: transparent; user-select: none; cursor: default;
@@ -32,10 +31,11 @@
       button:hover { background: rgba(255,255,255,.1); }
       button:active { background: rgba(0,0,0,.16); transform: scale(.96); }
       button:focus-visible { outline: 2px solid rgba(119, 211, 199, .72); outline-offset: -3px; }
-      #toggle { border-radius: 16px 0 0 16px; color: #78d2c8; }
-      #stop { border-radius: 0 16px 16px 0; }
-      #stop { color: rgba(255,255,255,0.68); font-size: 22px; font-weight: 300; }
+      #toggle { color: #78d2c8; }
+      #stop { flex: 0 0 45px; color: rgba(255,255,255,0.68); font-size: 15px; }
       #stop:hover { color: #ff9b95; }
+      #close { flex: 0 0 35px; color: rgba(255,255,255,.7); font-size: 19px; border-radius: 0 16px 16px 0; }
+      #close:hover { color: #fff; }
       /* Recording is a distinct state, not a variant of playing: the controls
          do not apply, so they are replaced rather than restyled. */
       #rec { display: none; flex: 1; align-items: center; justify-content: center;
@@ -76,17 +76,21 @@
         border-color: rgba(233, 182, 92, .48);
       }
       #sep { width: 1px; height: 20px; background: rgba(255,255,255,0.18); }
-      /* Drag handles flank the buttons so the panel can be moved without a
-         title bar, while clicks on the controls still register. */
-      .grip { width: 12px; height: 100%; -webkit-app-region: drag; }
+      /* Dragging moves the native panel, not Tauri's hidden owner window. */
+      #drag { flex: 0 0 32px; height: 100%; display: grid; place-items: center;
+              color: rgba(255,255,255,.55); cursor: grab; touch-action: none;
+              border-radius: 16px 0 0 16px; font-size: 16px; letter-spacing: -5px;
+              padding-right: 5px; }
+      #drag:active { cursor: grabbing; }
+      #drag:hover { color: #fff; background: rgba(255,255,255,.1); }
     </style>
   </head>
   <body>
     <div id="bar">
-      <div class="grip"></div>
+      <div id="drag" role="button" aria-label="Move player" title="Drag to move">⋮⋮</div>
       <button id="toggle" title="Pause / resume">❙❙</button>
       <div id="sep"></div>
-      <button id="stop" title="Stop speaking" aria-label="Stop speaking">×</button>
+      <button id="stop" title="Stop speaking" aria-label="Stop speaking">■</button>
       <div id="rec" role="status" aria-live="polite">
         <svg class="mic" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <circle class="pulse" cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.5"/>
@@ -102,7 +106,7 @@
         </svg>
         <span id="notice-label">Nothing selected</span>
       </div>
-      <div class="grip"></div>
+      <button id="close" title="Close popup" aria-label="Close popup">×</button>
     </div>
     <script type="module">
       import { invoke } from "@tauri-apps/api/core";
@@ -186,6 +190,33 @@
       document.getElementById("stop").addEventListener("click", () => {
         invoke("stop_speaking");
       });
+      document.getElementById("close").addEventListener("click", () => {
+        void invoke("close_player_popup", { notice: document.body.classList.contains("notice") });
+      });
+
+      const drag = document.getElementById("drag");
+      let lastPoint = null;
+      let pendingMove = Promise.resolve();
+      drag.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        lastPoint = [event.screenX, event.screenY];
+        drag.setPointerCapture(event.pointerId);
+        event.preventDefault();
+      });
+      drag.addEventListener("pointermove", (event) => {
+        if (!lastPoint || !drag.hasPointerCapture(event.pointerId)) return;
+        const dx = event.screenX - lastPoint[0];
+        const dy = event.screenY - lastPoint[1];
+        lastPoint = [event.screenX, event.screenY];
+        if (dx || dy) pendingMove = pendingMove.then(() => invoke("move_player_by", { dx, dy })).catch(() => {});
+      });
+      const finishDrag = () => {
+        if (!lastPoint) return;
+        lastPoint = null;
+        pendingMove = pendingMove.then(() => invoke("save_player_position")).catch(() => {});
+      };
+      drag.addEventListener("pointerup", finishDrag);
+      drag.addEventListener("pointercancel", finishDrag);
     </script>
   </body>
 </html>

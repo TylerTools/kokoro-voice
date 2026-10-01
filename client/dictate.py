@@ -33,10 +33,10 @@ TOKEN_FILE = os.environ.get(
     "KOKORO_TOKEN_FILE", os.path.expanduser("~/.config/kokoro-voice-2-1/token")
 )
 
-SAMPLE_RATE = 16000          # whisper's native rate — no resampling needed
 MAX_SECONDS = float(os.environ.get("DICTATE_MAX_SECONDS", "120"))
 PREVIEW_INTERVAL = float(os.environ.get("DICTATE_PREVIEW_INTERVAL", "0.55"))
 PREVIEW_MAX_SECONDS = float(os.environ.get("DICTATE_PREVIEW_WINDOW", "18"))
+PREVIEW_START_SECONDS = 3.0
 
 
 def _state_dir() -> str:
@@ -147,20 +147,107 @@ def transcribe(wav_bytes: bytes, timeout: float = 120) -> dict:
         return json.loads(resp.read())
 
 
-def _wav_bytes(frames, np, sf, max_seconds: float | None = None) -> bytes:
+def _wav_bytes(frames, np, sf, sample_rate: int,
+               max_seconds: float | None = None) -> bytes:
     audio = np.concatenate(frames, axis=0)
     if max_seconds is not None:
-        audio = audio[-int(SAMPLE_RATE * max_seconds):]
+        audio = audio[-int(sample_rate * max_seconds):]
     buf = io.BytesIO()
-    sf.write(buf, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
+    sf.write(buf, audio, sample_rate, format="WAV", subtype="PCM_16")
     return buf.getvalue()
+
+
+def available_input_device(requested: int | str | None, devices) -> int | str | None:
+    """Keep a preferred mic only while it is present as an input device."""
+    if requested is None:
+        return None
+    if isinstance(requested, int):
+        if 0 <= requested < len(devices) and devices[requested].get("max_input_channels", 0) > 0:
+            return requested
+        return None
+    if any(
+        item.get("name") == requested and item.get("max_input_channels", 0) > 0
+        for item in devices
+    ):
+        return requested
+    return None
+
+
+class MacNativeInputStream:
+    """Capture the macOS default microphone through AVAudioEngine.
+
+    PortAudio can block indefinitely in AudioDeviceStart even while the system
+    microphone meter is receiving sound. AVAudioEngine uses the working native
+    capture path and lets macOS own the input route.
+    """
+
+    def __init__(self, callback, np):
+        import ctypes
+        import objc
+
+        # Quartz/Vision already installs PyObjC. Load AVFAudio directly so an
+        # app update needs no new Python package or network access. The tap
+        # selector's block signature must be registered for this one call.
+        ctypes.CDLL("/System/Library/Frameworks/AVFAudio.framework/AVFAudio")
+        objc.registerMetaDataForSelector(
+            b"AVAudioNode",
+            b"installTapOnBus:bufferSize:format:block:",
+            {"arguments": {5: {"callable": {
+                "retval": {"type": b"v"},
+                "arguments": (
+                    {"type": b"^v", "null_accepted": True},
+                    {"type": b"@"},
+                    {"type": b"@"},
+                ),
+            }}}},
+        )
+        self.engine = objc.lookUpClass("AVAudioEngine").alloc().init()
+        self.node = self.engine.inputNode()
+        self.format = self.node.inputFormatForBus_(0)
+        self.sample_rate = int(round(self.format.sampleRate()))
+        self.started = False
+
+        def tap(buffer, _when):
+            count = int(buffer.frameLength())
+            if count:
+                # Copy inside the tap: AVAudioEngine reuses its buffer as soon
+                # as this callback returns.
+                channel = ctypes.cast(
+                    buffer.floatChannelData().pointerAsInteger,
+                    ctypes.POINTER(ctypes.POINTER(ctypes.c_float)),
+                )[0]
+                samples = np.ctypeslib.as_array(channel, shape=(count,)).reshape(-1, 1)
+                callback(samples, count, None, None)
+
+        self.tap = tap
+        self.node.installTapOnBus_bufferSize_format_block_(
+            0, 1024, self.format, self.tap
+        )
+
+    def start(self):
+        result = self.engine.startAndReturnError_(None)
+        ok, error = result if isinstance(result, tuple) else (result, None)
+        if not ok:
+            raise RuntimeError(f"native microphone start failed: {error}")
+        self.started = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _type, _value, _traceback):
+        if self.started:
+            self.engine.stop()
+        self.node.removeTapOnBus_(0)
+        # AVAudioEngine releases tap blocks on its own queue. Let that finish
+        # before Python finalizes the callback and its Objective-C bridge.
+        time.sleep(0.3)
 
 
 def record_until_stopped(
     session: str, device: int | str | None = None, live_preview: bool = False
 ) -> bytes:
+    print("MIC_PHASE imports", flush=True)
     import numpy as np
-    import sounddevice as sd
     import soundfile as sf
 
     control = stopfile(session)
@@ -188,8 +275,24 @@ def record_until_stopped(
     # microphone permission — no error, no prompt, just a hang that looks like
     # the app has frozen. Bound it, so a permissions problem reports itself.
     try:
-        stream = sd.InputStream(device=device, samplerate=SAMPLE_RATE, channels=1,
-                                dtype="float32", callback=cb)
+        print("MIC_PHASE device", flush=True)
+        if sys.platform == "darwin" and device is None:
+            print("MIC_PHASE open", flush=True)
+            stream = MacNativeInputStream(cb, np)
+            sample_rate = stream.sample_rate
+        else:
+            import sounddevice as sd
+            if device is not None:
+                available = available_input_device(device, sd.query_devices())
+                if available is None:
+                    print("STATUS preferred microphone unavailable; using system default",
+                          file=sys.stderr, flush=True)
+                device = available
+            sample_rate = int(round(sd.query_devices(device, "input")["default_samplerate"]))
+            print("MIC_PHASE open", flush=True)
+            stream = sd.InputStream(device=device, samplerate=sample_rate, channels=1,
+                                    dtype="float32", callback=cb)
+        print("MIC_PHASE start", flush=True)
         stream.start()
     except Exception as e:  # noqa: BLE001
         print(f"ERROR microphone unavailable ({e}) — grant Microphone access",
@@ -201,21 +304,26 @@ def record_until_stopped(
         if live_preview:
             def preview_worker():
                 last_samples = 0
-                next_preview = time.monotonic() + PREVIEW_INTERVAL
+                # A short take needs one authoritative pass. Starting a preview
+                # first makes its final pass wait behind redundant model work.
+                next_preview = time.monotonic() + max(
+                    PREVIEW_START_SECONDS, PREVIEW_INTERVAL
+                )
                 while not preview_stop.wait(max(0, next_preview - time.monotonic())):
                     snapshot = list(frames)
                     samples = sum(len(frame) for frame in snapshot)
-                    if samples - last_samples < SAMPLE_RATE * 0.6:
+                    if samples - last_samples < sample_rate * 0.6:
                         continue
                     last_samples = samples
                     try:
                         result = transcribe(
-                            _wav_bytes(snapshot, np, sf, PREVIEW_MAX_SECONDS), timeout=15
+                            _wav_bytes(snapshot, np, sf, sample_rate,
+                                       PREVIEW_MAX_SECONDS), timeout=15
                         )
                         text = " ".join((result.get("text") or "").split())
                         clean = "".join(c if c.isprintable() else " " for c in text)
                         if clean:
-                            kind = "PREVIEW_FULL" if samples <= SAMPLE_RATE * PREVIEW_MAX_SECONDS else "PREVIEW_ROLLING"
+                            kind = "PREVIEW_FULL" if samples <= sample_rate * PREVIEW_MAX_SECONDS else "PREVIEW_ROLLING"
                             print(kind + " " + clean, flush=True)
                     except Exception:
                         # Preview is advisory. The authoritative final pass
@@ -265,7 +373,7 @@ def record_until_stopped(
     if not frames:
         return b""
 
-    return _wav_bytes(frames, np, sf)
+    return _wav_bytes(frames, np, sf, sample_rate)
 
 
 def main() -> int:
@@ -308,12 +416,19 @@ def main() -> int:
         return 0
 
     if args.probe_device:
-        import sounddevice as sd
         device = int(args.device) if args.device and args.device.isdigit() else args.device
         try:
-            with sd.InputStream(device=device, samplerate=SAMPLE_RATE, channels=1,
-                                dtype="float32"):
-                time.sleep(0.12)
+            if sys.platform == "darwin" and device is None:
+                import numpy as np
+                with MacNativeInputStream(lambda *_: None, np) as stream:
+                    stream.start()
+                    time.sleep(0.12)
+            else:
+                import sounddevice as sd
+                sample_rate = int(round(sd.query_devices(device, "input")["default_samplerate"]))
+                with sd.InputStream(device=device, samplerate=sample_rate, channels=1,
+                                    dtype="float32"):
+                    time.sleep(0.12)
             print(json.dumps({"ok": True}))
             return 0
         except Exception as error:  # noqa: BLE001
@@ -336,7 +451,8 @@ def main() -> int:
         print("ERROR no audio captured", flush=True)
         return 1
 
-    seconds = len(wav) / (SAMPLE_RATE * 2)
+    import soundfile as sf
+    seconds = sf.info(io.BytesIO(wav)).duration
     print(f"TRANSCRIBING {seconds:.1f}", flush=True)   # UI switches to spinner
 
     try:
@@ -368,6 +484,7 @@ def main() -> int:
         "transcribe_seconds": round(transcribe_seconds, 3),
         "realtime_ratio": round(transcribe_seconds / max(audio_seconds, 0.001), 4),
         "preview_interval": PREVIEW_INTERVAL,
+        "preview_start_seconds": PREVIEW_START_SECONDS,
     }, separators=(",", ":")), flush=True)
 
     # Single line so the desktop parser can treat stdout as one-record-per-line.
