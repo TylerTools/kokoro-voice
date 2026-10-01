@@ -2512,7 +2512,16 @@ fn dictation_start(app: &AppHandle) {
                     // A preview fallback must not strand a partial message.
                     hide_player(&app2);
                     let mut outcome = ApplyOutcome::Unavailable;
-                    if let Some(target) = target.as_mut() {
+                    // The last preview was already verified in the original
+                    // editor. If the final pass agrees with it, there is no
+                    // edit to make and a later caret movement must not turn
+                    // that completed insertion into a clipboard fallback.
+                    if !clipboard_fallback
+                        && !inserted_text.is_empty()
+                        && final_text == inserted_text
+                    {
+                        outcome = ApplyOutcome::Applied;
+                    } else if let Some(target) = target.as_mut() {
                         for attempt in 0..2 {
                             outcome = PlatformTextBackend::apply_revision(
                                 target,
