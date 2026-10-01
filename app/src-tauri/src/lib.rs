@@ -2444,7 +2444,11 @@ fn dictation_start(app: &AppHandle) {
                                         );
                                         show_player_notice(
                                             &app2,
-                                            "Focus changed. Final text will be copied.",
+                                            if reason == "focus-changed" {
+                                                "Focus changed. Final text will be copied."
+                                            } else {
+                                                "Could not confirm text in this field. Final text will be copied."
+                                            },
                                         );
                                         if let Some(d) = app2.try_state::<Dictation>() {
                                             if let Ok(mut guard) = d.0.lock() {

@@ -644,7 +644,13 @@ mod platform {
                 "wanted_chars": wanted.chars().count(),
                 "expected_selection_start": target.start + replacement.chars().count(),
             });
-            for _ in 0..10 {
+            // Quartz posts the keystrokes asynchronously. Busy web editors can
+            // expose the old value for longer than 250 ms even though the same
+            // target eventually receives every character. Keep checking the
+            // locked process/window before treating that delay as a lost edit.
+            let verification_deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(1500);
+            while std::time::Instant::now() < verification_deadline {
                 std::thread::sleep(std::time::Duration::from_millis(25));
                 if let Ok((element, pid, current, selection_start, selection_len)) = focused() {
                     let (current_target_id, current_scope_id) = identities(&element, pid);

@@ -21,7 +21,7 @@
     screen_capture: "checked-on-use",
   };
   const app = {
-    app_version: "2.1.1-beta.27-preview",
+    app_version: "2.1.1-beta.28-preview",
     build_revision: "0c4e133000000000000000000000000000000000",
     platform: "macos",
     architecture: "aarch64",
