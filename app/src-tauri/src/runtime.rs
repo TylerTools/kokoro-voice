@@ -590,7 +590,7 @@ fn reap_orphan() {
             })
             .unwrap_or(false);
         #[cfg(target_os = "windows")]
-        let ours = Command::new("powershell")
+        let ours = Command::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-Command",

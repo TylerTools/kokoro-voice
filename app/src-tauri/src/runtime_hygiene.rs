@@ -125,7 +125,7 @@ pub(crate) fn speaker_is_live(pid: u32) -> bool {
         .args(["-o", "command=", "-p", &pid.to_string()])
         .output();
     #[cfg(target_os = "windows")]
-    let output = std::process::Command::new("powershell")
+    let output = std::process::Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-Command",

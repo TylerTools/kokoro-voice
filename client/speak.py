@@ -191,7 +191,7 @@ def get_clipboard() -> str:
         return subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
     if IS_WIN:
         return subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+            ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"],
             capture_output=True, text=True,
         ).stdout
     return subprocess.run(["xclip", "-o", "-selection", "clipboard"],
@@ -238,7 +238,7 @@ def copy_selection() -> str:
     elif IS_WIN:
         wait_for_modifier_release()
         subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
+            ["powershell.exe", "-NoProfile", "-Command",
              "Add-Type -AssemblyName System.Windows.Forms;"
              "[System.Windows.Forms.SendKeys]::SendWait('^c')"],
             capture_output=True,
@@ -377,7 +377,7 @@ def _pid_is_our_speaker(pid: int) -> bool:
         if IS_WIN:
             command = subprocess.run(
                 [
-                    "powershell",
+                    "powershell.exe",
                     "-NoProfile",
                     "-Command",
                     f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine",

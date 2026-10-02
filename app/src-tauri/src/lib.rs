@@ -395,9 +395,10 @@ fn find_or_install_uv(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     {
         let file = std::fs::File::open(&archive).map_err(|e| e.to_string())?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        let mut source = zip
-            .by_name("uv-x86_64-pc-windows-msvc/uv.exe")
-            .map_err(|e| e.to_string())?;
+        let flat = zip.by_name("uv.exe").is_ok();
+        let prefixed = zip.by_name("uv-x86_64-pc-windows-msvc/uv.exe").is_ok();
+        let entry = windows_uv_archive_entry(flat, prefixed)?;
+        let mut source = zip.by_name(entry).map_err(|e| e.to_string())?;
         let mut output = std::fs::File::create(&executable).map_err(|e| e.to_string())?;
         std::io::copy(&mut source, &mut output).map_err(|e| e.to_string())?;
     }
@@ -422,6 +423,20 @@ fn find_or_install_uv(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .exists()
         .then_some(executable)
         .ok_or_else(|| "verified Python manager archive did not contain uv".into())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_uv_archive_entry(
+    has_flat_entry: bool,
+    has_prefixed_entry: bool,
+) -> Result<&'static str, String> {
+    if has_flat_entry {
+        Ok("uv.exe")
+    } else if has_prefixed_entry {
+        Ok("uv-x86_64-pc-windows-msvc/uv.exe")
+    } else {
+        Err("verified Python manager archive did not contain uv.exe".into())
+    }
 }
 
 /// Build the engine into Application Support.
@@ -1994,7 +2009,7 @@ fn set_clipboard(text: &str) {
     use std::io::Write;
     // Clipboard is the durable fallback; SendKeys performs the immediate paste
     // without interpolating dictated text into PowerShell source.
-    let mut copy = Command::new("powershell")
+    let mut copy = Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-Command",
@@ -3172,6 +3187,17 @@ mod live_dictation_tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_uv_archive_accepts_current_flat_and_legacy_prefixed_layouts() {
+        assert_eq!(windows_uv_archive_entry(true, false).unwrap(), "uv.exe");
+        assert_eq!(
+            windows_uv_archive_entry(false, true).unwrap(),
+            "uv-x86_64-pc-windows-msvc/uv.exe"
+        );
+        assert!(windows_uv_archive_entry(false, false).is_err());
     }
 
     fn temporary_engine_root(label: &str) -> std::path::PathBuf {
