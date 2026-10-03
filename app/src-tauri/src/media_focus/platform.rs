@@ -9,8 +9,8 @@ pub(super) struct Native;
 mod quiet_windows;
 
 #[cfg(target_os = "windows")]
-pub(crate) fn run_quiet_worker(root: u32) {
-    quiet_windows::run_worker(root);
+pub(crate) fn run_quiet_worker(root: u32, duck: bool, level: f64) {
+    quiet_windows::run_worker(root, duck, level);
 }
 
 #[cfg(target_os = "macos")]
@@ -50,6 +50,72 @@ mod quiet_macos {
         fn drop(&mut self) {
             unsafe {
                 hereword_quiet_stop(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod duck_macos {
+    use super::super::QuietAudio;
+    use std::io::BufRead;
+    use std::process::{Child, Command, Stdio};
+    use std::time::Duration;
+
+    pub(super) struct Duck(Option<Child>);
+    impl Duck {
+        pub(super) fn start(level: f64) -> Option<Self> {
+            let mut child = Command::new("/usr/bin/osascript")
+                .args(["-l", "JavaScript", "-e", include_str!("duck_macos.js")])
+                .env("HEREWORD_DUCK_LEVEL", format!("{level:.2}"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()?;
+            let stdout = child.stdout.take()?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut line = String::new();
+                let _ = std::io::BufReader::new(stdout).read_line(&mut line);
+                let _ = tx.send(line);
+            });
+            let duck = Self(Some(child));
+            match rx.recv_timeout(Duration::from_secs(3)) {
+                Ok(line) if line.trim().starts_with("READY ") => {
+                    let players = line
+                        .trim()
+                        .strip_prefix("READY ")
+                        .and_then(|count| count.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    crate::structured_log(
+                        "media-duck-start",
+                        serde_json::json!({"players": players, "level": level}),
+                    );
+                    if players > 0 { Some(duck) } else { None }
+                }
+                _ => {
+                    crate::structured_log("media-duck-unavailable", serde_json::json!({}));
+                    None
+                }
+            }
+        }
+    }
+    impl QuietAudio for Duck {
+        fn refresh(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                let _ = child.try_wait();
+            }
+        }
+    }
+    impl Drop for Duck {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                child.stdin.take();
+                // Wait for fade-back before another lease can capture a new
+                // baseline. Detached restores can overlap the next duck and
+                // repeatedly lower music that was already quieted.
+                let _ = child.wait();
             }
         }
     }
@@ -96,6 +162,9 @@ fn command(action: &str, expected: Option<&Snapshot>) -> Result<serde_json::Valu
 impl MediaPlatform for Native {
     fn quiet(&self) -> Option<Box<dyn super::QuietAudio>> {
         quiet_macos::Quiet::start().map(|quiet| Box::new(quiet) as Box<dyn super::QuietAudio>)
+    }
+    fn duck(&self, level: f64) -> Option<Box<dyn super::QuietAudio>> {
+        duck_macos::Duck::start(level).map(|duck| Box::new(duck) as Box<dyn super::QuietAudio>)
     }
     fn snapshots(&self) -> Result<Vec<Snapshot>, ()> {
         let value = command("get", None)?;
@@ -174,6 +243,10 @@ mod windows_adapter {
     impl MediaPlatform for Native {
         fn quiet(&self) -> Option<Box<dyn super::super::QuietAudio>> {
             super::quiet_windows::Quiet::start()
+                .map(|quiet| Box::new(quiet) as Box<dyn super::super::QuietAudio>)
+        }
+        fn duck(&self, level: f64) -> Option<Box<dyn super::super::QuietAudio>> {
+            super::quiet_windows::Quiet::start_duck(level)
                 .map(|quiet| Box::new(quiet) as Box<dyn super::super::QuietAudio>)
         }
         fn snapshots(&self) -> Result<Vec<Snapshot>, ()> {

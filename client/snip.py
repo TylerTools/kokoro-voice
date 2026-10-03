@@ -83,7 +83,7 @@ exit 1
 '''
         env = os.environ.copy()
         env["KOKORO_SNIP_PATH"] = os.path.abspath(path)
-        subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", script], env=env, check=False)
+        subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-Command", script], env=env, check=False)
     else:
         return False
     return os.path.exists(path) and os.path.getsize(path) > 0
@@ -103,10 +103,11 @@ function Await-Result($operation, [Type]$resultType) {
   return $task.Result
 }
 [Windows.Storage.StorageFile, Windows.Storage, ContentType=WindowsRuntime] | Out-Null
+[Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType=WindowsRuntime] | Out-Null
 [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime] | Out-Null
 [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime] | Out-Null
 $file = Await-Result ([Windows.Storage.StorageFile]::GetFileFromPathAsync($env:KOKORO_OCR_PATH)) ([Windows.Storage.StorageFile])
-$stream = Await-Result ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
+$stream = Await-Result ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
 $decoder = Await-Result ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
 $bitmap = Await-Result ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
 $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
@@ -118,7 +119,7 @@ $result.Text
         env = os.environ.copy()
         env["KOKORO_OCR_PATH"] = os.path.abspath(path)
         out = subprocess.run(
-            ["powershell", "-NoProfile", "-STA", "-Command", script],
+            ["powershell.exe", "-NoProfile", "-STA", "-Command", script],
             env=env, capture_output=True, text=True,
         )
         if out.returncode != 0:

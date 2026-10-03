@@ -34,7 +34,7 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
     };
     if (deniedPermission && selectedPlatform === "macos") permissions[deniedPermission] = "required";
     const state = {
-      permissions, registered: initialRegistered, checksFail: false, pauseOtherMedia: false, prefsFail: false, offlineReady: initialOfflineReady, hiddenWindow: false,
+      permissions, registered: initialRegistered, checksFail: false, mediaMode: "off", prefsFail: false, offlineReady: initialOfflineReady, hiddenWindow: false,
       retryReportsAvailable: initialRetryReportsAvailable, accessibilityRetries: 0,
       emit(event: string, payload: unknown) {
         for (const handler of eventHandlers.get(event) ?? []) {
@@ -118,11 +118,11 @@ async function installTauriMock(page: Page, platform: Platform, denied?: "access
                 cue_enabled: true,
                 cue_volume: 0.22,
                 live_preview: true,
-                pause_other_media: state.pauseOtherMedia,
+                media_mode: state.mediaMode,
               };
             case "set_prefs":
               if (state.prefsFail) throw new Error("Could not save preferences");
-              if (args && "pauseOtherMedia" in args) state.pauseOtherMedia = Boolean(args.pauseOtherMedia);
+              if (args && "mediaMode" in args) state.mediaMode = String(args.mediaMode);
               return null;
             case "launch_at_login_status":
               return true;
@@ -178,12 +178,12 @@ for (const platform of ["macos", "windows"] as const) {
     await expect(page.locator("body")).toHaveAttribute("data-platform", platform);
     await expect(page.locator("#app-version")).toContainText("2.1.1-beta.9 · 01234567");
     await expect(page.locator("#setup")).toBeHidden();
-    await expect(page.locator("#pause-other-media")).not.toBeChecked();
-    await page.locator("#pause-other-media").check();
-    expect(await page.evaluate(() => (window as unknown as { __setupTest: { pauseOtherMedia: boolean } }).__setupTest.pauseOtherMedia)).toBe(true);
+    await expect(page.locator("#media-mode")).toHaveValue("off");
+    await page.locator("#media-mode").selectOption("duck");
+    expect(await page.evaluate(() => (window as unknown as { __setupTest: { mediaMode: string } }).__setupTest.mediaMode)).toBe("duck");
     await page.evaluate(() => { (window as unknown as { __setupTest: { prefsFail: boolean } }).__setupTest.prefsFail = true; });
-    await page.locator("#pause-other-media").click();
-    await expect(page.locator("#pause-other-media")).toBeChecked();
+    await page.locator("#media-mode").selectOption("pause");
+    await expect(page.locator("#media-mode")).toHaveValue("duck");
     await expect(page.locator("#detail")).toContainText("Couldn’t save the media setting");
     await expect(page.locator("#key-read")).toHaveText(
       platform === "macos" ? "⌃⌥⌘U" : "Ctrl+Alt+Win+U",

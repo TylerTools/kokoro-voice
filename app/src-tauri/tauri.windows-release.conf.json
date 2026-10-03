@@ -3,7 +3,7 @@
   "bundle": {
     "targets": ["nsis"],
     "windows": {
-      "signCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/release/sign-windows.ps1 \"%1\"",
+      "signCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/release/sign-windows.ps1 \"%1\"",
       "nsis": {
         "installMode": "currentUser"
       }
