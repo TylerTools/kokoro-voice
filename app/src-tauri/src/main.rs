@@ -9,14 +9,18 @@ fn main() {
         let args: Vec<_> = std::env::args().collect();
         if args
             .get(1)
-            .is_some_and(|arg| arg == "--hereword-quiet-worker")
+            .is_some_and(|arg| arg == "--hereword-quiet-worker" || arg == "--hereword-duck-worker")
         {
             if let Some(root) = args
                 .get(2)
                 .and_then(|arg| arg.parse::<u32>().ok())
                 .filter(|root| *root > 0)
             {
-                app_lib::run_audio_quiet_worker(root);
+                app_lib::run_audio_quiet_worker(
+                    root,
+                    args.get(1)
+                        .is_some_and(|arg| arg == "--hereword-duck-worker"),
+                );
             }
             return;
         }

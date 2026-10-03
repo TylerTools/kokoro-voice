@@ -143,8 +143,13 @@
       </label>
 
       <label class="field">
-        <span class="check-label"><input id="pause-other-media" type="checkbox" /> Quiet other audio while recording or speaking</span>
-        <small>Pauses supported media and silences other sound. Restores audio when finished; silenced media keeps advancing.</small>
+        <span>Other audio while recording or speaking</span>
+        <select id="media-mode" aria-label="Other audio while recording or speaking">
+          <option value="off">Leave it alone</option>
+          <option value="pause">Pause it</option>
+          <option value="duck">Fade it down</option>
+        </select>
+        <small id="media-mode-help">Fade down lowers Spotify and Music on Mac, or other app audio on Windows, then fades it back. Pause keeps the existing behavior.</small>
       </label>
 
       <label class="field">

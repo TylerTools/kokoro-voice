@@ -468,7 +468,7 @@ listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
 const SPEEDS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 
 async function initPrefs() {
-  const prefs = await invoke<{ voice: string; speed: number; cue_enabled?: boolean; cue_volume?: number; live_preview?: boolean; pause_other_media?: boolean }>("get_prefs");
+  const prefs = await invoke<{ voice: string; speed: number; cue_enabled?: boolean; cue_volume?: number; live_preview?: boolean; pause_other_media?: boolean; media_mode?: "off" | "pause" | "duck" }>("get_prefs");
 
   const cueEnabled = document.getElementById("cue-enabled") as HTMLInputElement;
   const cueVolume = document.getElementById("cue-volume") as HTMLInputElement;
@@ -493,17 +493,20 @@ async function initPrefs() {
   livePreview.onchange = () => {
     void invoke("set_prefs", { livePreview: livePreview.checked });
   };
-  const pauseOtherMedia = document.getElementById("pause-other-media") as HTMLInputElement;
-  pauseOtherMedia.checked = prefs.pause_other_media === true;
-  pauseOtherMedia.onchange = async () => {
-    pauseOtherMedia.disabled = true;
+  const mediaMode = document.getElementById("media-mode") as HTMLSelectElement;
+  let savedMediaMode = prefs.media_mode ?? (prefs.pause_other_media === true ? "pause" : "off");
+  mediaMode.value = savedMediaMode;
+  mediaMode.onchange = async () => {
+    const selected = mediaMode.value;
+    mediaMode.disabled = true;
     try {
-      await invoke("set_prefs", { pauseOtherMedia: pauseOtherMedia.checked });
+      await invoke("set_prefs", { mediaMode: selected });
+      savedMediaMode = selected as typeof savedMediaMode;
     } catch {
-      pauseOtherMedia.checked = !pauseOtherMedia.checked;
+      mediaMode.value = savedMediaMode;
       detail.textContent = "Couldn’t save the media setting. Try again.";
     } finally {
-      pauseOtherMedia.disabled = false;
+      mediaMode.disabled = false;
     }
   };
   const launchAtLogin = document.getElementById("launch-at-login") as HTMLInputElement;
