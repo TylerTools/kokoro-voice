@@ -151,6 +151,15 @@ impl MediaFocus {
         }
     }
 
+    /// Stop the current interruption without disabling future Read or Dictate
+    /// sessions. Closing the player calls this while the app keeps running.
+    pub(crate) fn release_all(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.leases.clear();
+            self.restore(&mut state);
+        }
+    }
+
     pub(crate) fn shutdown(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.closed = true;
@@ -373,6 +382,29 @@ mod tests {
         drop(first);
         assert_eq!(active.load(Ordering::SeqCst), 1);
         drop(second);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn closing_player_releases_duck_and_next_read_can_duck_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = Arc::new(AtomicUsize::new(0));
+        let focus = Arc::new(MediaFocus {
+            state: Mutex::new(Interruption::default()),
+            platform: Box::new(DuckOnly {
+                active: active.clone(),
+                levels: Arc::new(Mutex::new(Vec::new())),
+            }),
+        });
+        let old_lease = focus.acquire(MediaMode::Duck, 0.8);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        focus.release_all();
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        let new_lease = focus.acquire(MediaMode::Duck, 0.8);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        drop(old_lease);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        drop(new_lease);
         assert_eq!(active.load(Ordering::SeqCst), 0);
     }
 

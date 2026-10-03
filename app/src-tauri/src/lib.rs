@@ -1707,6 +1707,31 @@ fn run_client_monitored(
                 })
         });
         drop(dictation_guard);
+        // A paused Read can remain alive indefinitely. Keep its music fade only
+        // while speech is actually playing, including accessory pause/resume.
+        let focus_stop = Arc::new(AtomicBool::new(false));
+        let focus_watcher = generation.map(|current_generation| {
+            let app = app2.clone();
+            let stop = focus_stop.clone();
+            std::thread::spawn(move || {
+                let mut lease = media_lease;
+                while !stop.load(Ordering::SeqCst) {
+                    let Some(manager) = app.try_state::<playback::PlaybackManager>() else {
+                        break;
+                    };
+                    if !manager.is_current(current_generation) {
+                        break;
+                    }
+                    match manager.state() {
+                        "playing" if lease.is_none() => lease = acquire_media_focus(&app),
+                        "paused" | "stopping" => drop(lease.take()),
+                        _ => {}
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                drop(lease);
+            })
+        });
         let (generation, output) = match child {
             Ok(mut child) => {
                 let input_result = stdin_payload.as_deref().map(|text| {
@@ -1731,11 +1756,31 @@ fn run_client_monitored(
             Err(error) => (generation, Err(error.to_string())),
         };
         // Audio has ended even if a notice remains visible afterwards.
-        drop(media_lease);
+        focus_stop.store(true, Ordering::SeqCst);
+        if let Some(watcher) = focus_watcher {
+            let _ = watcher.join();
+        }
         let notice = match output {
-            Ok(result) => String::from_utf8_lossy(&result.stdout)
-                .lines()
-                .find_map(|line| line.strip_prefix("NOTICE ").map(str::to_owned)),
+            Ok(result) => {
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                for line in stdout.lines() {
+                    if let Some(stats) = line.strip_prefix("AUDIO_STATS ") {
+                        let fields = stats
+                            .split_whitespace()
+                            .filter_map(|part| part.split_once('='))
+                            .filter_map(|(key, value)| {
+                                matches!(key, "underflows" | "reopens")
+                                    .then(|| value.parse::<u32>().ok().map(|value| (key, value)))
+                                    .flatten()
+                            })
+                            .collect::<std::collections::HashMap<_, _>>();
+                        structured_log("speech-audio-stats", serde_json::json!(fields));
+                    }
+                }
+                stdout
+                    .lines()
+                    .find_map(|line| line.strip_prefix("NOTICE ").map(str::to_owned))
+            }
             Err(error) => {
                 eprintln!("could not start HereWord playback: {error}");
                 Some("HereWord couldn't start. Open Settings.".into())
@@ -2692,7 +2737,7 @@ fn stop_managed_playback(app: &AppHandle) {
         let _ = manager.stop();
     }
     if let Some(focus) = app.try_state::<Arc<media_focus::MediaFocus>>() {
-        focus.shutdown();
+        focus.release_all();
     }
 }
 

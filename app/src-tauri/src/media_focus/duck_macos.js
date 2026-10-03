@@ -3,8 +3,8 @@
 // Never changes the Mac output device or its master volume.
 ObjC.import('Foundation');
 
-function writeReady() {
-  const data = $.NSString.stringWithString('READY\n').dataUsingEncoding($.NSUTF8StringEncoding);
+function writeReady(count) {
+  const data = $.NSString.stringWithString(`READY ${count}\n`).dataUsingEncoding($.NSUTF8StringEncoding);
   $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
 }
 
@@ -50,6 +50,7 @@ function duckLevel() {
 
 function run() {
   const changed = [];
+  let ducked = 0;
   const level = duckLevel();
   try {
     for (const bundleID of ['com.spotify.client', 'com.apple.Music']) {
@@ -57,9 +58,9 @@ function run() {
       if (!entry) continue;
       changed.push(entry);
       const target = Math.max(1, Math.round(entry.original * level));
-      fade(entry, entry.original, target);
+      if (fade(entry, entry.original, target)) ducked++;
     }
-    writeReady();
+    writeReady(ducked);
     $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
   } finally {
     for (const entry of changed) {

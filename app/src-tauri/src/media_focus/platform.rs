@@ -82,7 +82,18 @@ mod duck_macos {
             });
             let duck = Self(Some(child));
             match rx.recv_timeout(Duration::from_secs(3)) {
-                Ok(line) if line.trim() == "READY" => Some(duck),
+                Ok(line) if line.trim().starts_with("READY ") => {
+                    let players = line
+                        .trim()
+                        .strip_prefix("READY ")
+                        .and_then(|count| count.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    crate::structured_log(
+                        "media-duck-start",
+                        serde_json::json!({"players": players, "level": level}),
+                    );
+                    if players > 0 { Some(duck) } else { None }
+                }
                 _ => {
                     crate::structured_log("media-duck-unavailable", serde_json::json!({}));
                     None
