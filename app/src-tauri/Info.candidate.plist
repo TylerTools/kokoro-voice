@@ -5,7 +5,7 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>HereWord Candidate records your voice so it can be transcribed to text. Audio is processed on this computer and is never uploaded or saved.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>HereWord Candidate types dictated text into the app you are working in, and reads the text you have selected.</string>
+    <string>HereWord Candidate reads selected text, types dictated text, and controls supported music players when you choose to pause or fade their audio.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>HereWord Candidate captures the area you select so the text in it can be read aloud. The capture is deleted as soon as the text is extracted.</string>
   </dict>
