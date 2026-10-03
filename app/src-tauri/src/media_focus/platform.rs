@@ -100,10 +100,10 @@ mod duck_macos {
         fn drop(&mut self) {
             if let Some(mut child) = self.0.take() {
                 child.stdin.take();
-                // EOF asks the helper to fade back even if the app was interrupted.
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
+                // Wait for fade-back before another lease can capture a new
+                // baseline. Detached restores can overlap the next duck and
+                // repeatedly lower music that was already quieted.
+                let _ = child.wait();
             }
         }
     }

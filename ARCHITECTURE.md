@@ -166,6 +166,10 @@ exits; Dictate acquires before microphone startup and releases at TRANSCRIBING
 Overlapping actions restore media only after the last lease ends. A speech
 session paused in HereWord retains its lease until stopped or completed.
 Graceful quit and the signal shutdown path restore owned paused media once.
+On macOS the optional Fade mode lowers playing Spotify or Apple Music to 60%
+of its starting app volume without pausing playback or changing the system
+output volume. The fade helper completes its return before another lease
+captures a baseline, so quick successive Reads cannot compound the reduction.
 
 Platform adapters stay under `media_focus/`. macOS uses its active Now Playing
 player through the system JXA host and MediaRemote; Windows enumerates sessions

@@ -8,19 +8,24 @@ function writeReady() {
   $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
 }
 
-function fade(entry, from, to) {
+function fade(entry, from, to, restoring = false) {
   let expected = from;
+  let previous = from;
   for (let step = 1; step <= 8; step++) {
     if (!entry.app.running()) return false;
     const actual = entry.app.soundVolume();
-    if (typeof actual !== 'number' || Math.abs(actual - expected) > 2) return false;
+    // Spotify may report the previous ramp step while a volume write settles.
+    // Allow that lag on the way back up, while still honoring a larger manual change.
+    const tolerance = restoring ? Math.max(3, Math.abs(expected - previous) + 2) : 2;
+    if (typeof actual !== 'number' || Math.abs(actual - expected) > tolerance) return false;
     const progress = step / 8;
     const smooth = progress * progress * (3 - 2 * progress);
     const next = Math.round(from + (to - from) * smooth);
     entry.app.soundVolume = next;
+    previous = expected;
     expected = next;
     entry.applied = next;
-    delay(0.04);
+    delay(0.06);
   }
   return true;
 }
@@ -44,7 +49,7 @@ function run() {
       const entry = playingApp(bundleID);
       if (!entry) continue;
       changed.push(entry);
-      const target = Math.max(1, Math.round(entry.original * 0.25));
+      const target = Math.max(1, Math.round(entry.original * 0.60));
       fade(entry, entry.original, target);
     }
     writeReady();
@@ -53,7 +58,7 @@ function run() {
     for (const entry of changed) {
       try {
         if (entry.app.running() && Math.abs(entry.app.soundVolume() - entry.applied) <= 2) {
-          fade(entry, entry.applied, entry.original);
+          fade(entry, entry.applied, entry.original, true);
         }
       } catch (_) { /* A closed player needs no volume change. */ }
     }
