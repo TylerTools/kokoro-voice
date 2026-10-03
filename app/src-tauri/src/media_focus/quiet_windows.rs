@@ -150,16 +150,20 @@ pub(super) struct Quiet {
 }
 impl Quiet {
     pub(super) fn start() -> Option<Self> {
-        Self::start_worker("--hereword-quiet-worker")
+        Self::start_worker("--hereword-quiet-worker", 0.80)
     }
-    pub(super) fn start_duck() -> Option<Self> {
-        Self::start_worker("--hereword-duck-worker")
+    pub(super) fn start_duck(level: f64) -> Option<Self> {
+        Self::start_worker("--hereword-duck-worker", level)
     }
-    fn start_worker(argument: &str) -> Option<Self> {
+    fn start_worker(argument: &str, level: f64) -> Option<Self> {
         use std::io::BufRead;
         use std::process::{Command, Stdio};
         let mut child = Command::new(std::env::current_exe().ok()?)
-            .args([argument, &std::process::id().to_string()])
+            .args([
+                argument,
+                &std::process::id().to_string(),
+                &level.to_string(),
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -203,6 +207,7 @@ struct SessionDuck {
     sessions: HashMap<String, DuckSession>,
     observed: HashSet<String>,
     root: u32,
+    level: f32,
 }
 
 impl SessionDuck {
@@ -223,7 +228,7 @@ impl SessionDuck {
                     let progress = (now - session.started).as_secs_f32() / 0.32;
                     let t = progress.clamp(0.0, 1.0);
                     let smooth = t * t * (3.0 - 2.0 * t);
-                    let next = session.original * (1.0 - 0.75 * smooth);
+                    let next = session.original * (1.0 - (1.0 - self.level) * smooth);
                     if (next - session.applied).abs() >= 0.005 {
                         volume.SetMasterVolume(next, &windows::core::GUID::zeroed())?;
                         session.applied = next;
@@ -288,7 +293,7 @@ impl SessionDuck {
     }
 }
 
-pub(crate) fn run_worker(root: u32, duck: bool) {
+pub(crate) fn run_worker(root: u32, duck: bool, level: f64) {
     use std::io::{Read, Write};
     let Ok(_apartment) = Apartment::new() else {
         return;
@@ -307,6 +312,7 @@ pub(crate) fn run_worker(root: u32, duck: bool) {
             sessions: HashMap::new(),
             observed: HashSet::new(),
             root,
+            level: level.clamp(0.40, 0.95) as f32,
         })
     } else {
         None

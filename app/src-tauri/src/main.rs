@@ -20,6 +20,11 @@ fn main() {
                     root,
                     args.get(1)
                         .is_some_and(|arg| arg == "--hereword-duck-worker"),
+                    args.get(3)
+                        .and_then(|arg| arg.parse::<f64>().ok())
+                        .filter(|value| value.is_finite())
+                        .unwrap_or(0.80)
+                        .clamp(0.40, 0.95),
                 );
             }
             return;

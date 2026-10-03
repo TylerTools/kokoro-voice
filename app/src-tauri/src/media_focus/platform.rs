@@ -9,8 +9,8 @@ pub(super) struct Native;
 mod quiet_windows;
 
 #[cfg(target_os = "windows")]
-pub(crate) fn run_quiet_worker(root: u32, duck: bool) {
-    quiet_windows::run_worker(root, duck);
+pub(crate) fn run_quiet_worker(root: u32, duck: bool, level: f64) {
+    quiet_windows::run_worker(root, duck, level);
 }
 
 #[cfg(target_os = "macos")]
@@ -64,9 +64,10 @@ mod duck_macos {
 
     pub(super) struct Duck(Option<Child>);
     impl Duck {
-        pub(super) fn start() -> Option<Self> {
+        pub(super) fn start(level: f64) -> Option<Self> {
             let mut child = Command::new("/usr/bin/osascript")
                 .args(["-l", "JavaScript", "-e", include_str!("duck_macos.js")])
+                .env("HEREWORD_DUCK_LEVEL", format!("{level:.2}"))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -151,8 +152,8 @@ impl MediaPlatform for Native {
     fn quiet(&self) -> Option<Box<dyn super::QuietAudio>> {
         quiet_macos::Quiet::start().map(|quiet| Box::new(quiet) as Box<dyn super::QuietAudio>)
     }
-    fn duck(&self) -> Option<Box<dyn super::QuietAudio>> {
-        duck_macos::Duck::start().map(|duck| Box::new(duck) as Box<dyn super::QuietAudio>)
+    fn duck(&self, level: f64) -> Option<Box<dyn super::QuietAudio>> {
+        duck_macos::Duck::start(level).map(|duck| Box::new(duck) as Box<dyn super::QuietAudio>)
     }
     fn snapshots(&self) -> Result<Vec<Snapshot>, ()> {
         let value = command("get", None)?;
@@ -233,8 +234,8 @@ mod windows_adapter {
             super::quiet_windows::Quiet::start()
                 .map(|quiet| Box::new(quiet) as Box<dyn super::super::QuietAudio>)
         }
-        fn duck(&self) -> Option<Box<dyn super::super::QuietAudio>> {
-            super::quiet_windows::Quiet::start_duck()
+        fn duck(&self, level: f64) -> Option<Box<dyn super::super::QuietAudio>> {
+            super::quiet_windows::Quiet::start_duck(level)
                 .map(|quiet| Box::new(quiet) as Box<dyn super::super::QuietAudio>)
         }
         fn snapshots(&self) -> Result<Vec<Snapshot>, ()> {

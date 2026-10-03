@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "HereWord",
-  "version": "2.1.1-beta.31",
+  "version": "2.1.1-beta.32",
   "identifier": "com.tylertools.kokoro-voice-2-1",
   "plugins": {
     "updater": {

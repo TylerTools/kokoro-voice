@@ -236,6 +236,7 @@ button.danger:hover { background: color-mix(in srgb, var(--danger) 9%, transpare
   gap: 12px;
   border-top: 1px solid var(--line);
 }
+.field[hidden] { display: none; }
 .field:first-of-type { border-top: 0; }
 .field > span:first-child { color: var(--muted); font-size: 13px; }
 .field .check-label { color: var(--ink) !important; }

@@ -12,6 +12,9 @@ pub const DEFAULT_SPEED: f64 = 1.0;
 pub const MIN_SPEED: f64 = 0.5;
 pub const MAX_SPEED: f64 = 2.0;
 pub const DEFAULT_CUE_VOLUME: f64 = 0.22;
+pub const DEFAULT_MEDIA_DUCK_LEVEL: f64 = 0.80;
+pub const MIN_MEDIA_DUCK_LEVEL: f64 = 0.40;
+pub const MAX_MEDIA_DUCK_LEVEL: f64 = 0.95;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaMode {
@@ -118,6 +121,16 @@ impl Preferences {
             "pause_other_media".into(),
             Value::Bool(media_mode == MediaMode::Pause),
         );
+        let media_duck_level = object
+            .get("media_duck_level")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .unwrap_or(DEFAULT_MEDIA_DUCK_LEVEL)
+            .clamp(MIN_MEDIA_DUCK_LEVEL, MAX_MEDIA_DUCK_LEVEL);
+        object.insert(
+            "media_duck_level".into(),
+            serde_json::json!(media_duck_level),
+        );
 
         if object
             .get("microphone_device")
@@ -163,9 +176,24 @@ impl Preferences {
             .unwrap_or(MediaMode::Off)
     }
 
+    pub fn media_duck_level(&self) -> f64 {
+        self.document["media_duck_level"]
+            .as_f64()
+            .unwrap_or(DEFAULT_MEDIA_DUCK_LEVEL)
+    }
+
     pub fn set_media_mode(&mut self, mode: MediaMode) {
         self.set("media_mode", Value::String(mode.as_str().into()));
         self.set("pause_other_media", Value::Bool(mode == MediaMode::Pause));
+    }
+
+    pub fn set_media_duck_level(&mut self, level: f64) {
+        if level.is_finite() {
+            self.set(
+                "media_duck_level",
+                serde_json::json!(level.clamp(MIN_MEDIA_DUCK_LEVEL, MAX_MEDIA_DUCK_LEVEL)),
+            );
+        }
     }
 
     pub fn microphone_device(&self) -> Option<&str> {
@@ -273,6 +301,20 @@ mod tests {
         assert_eq!(preferences.as_value()["pause_other_media"], false);
         preferences.set_media_mode(MediaMode::Pause);
         assert_eq!(preferences.as_value()["pause_other_media"], true);
+    }
+
+    #[test]
+    fn media_duck_level_defaults_and_stays_in_the_supported_range() {
+        let mut preferences = Preferences::default();
+        assert_eq!(preferences.media_duck_level(), DEFAULT_MEDIA_DUCK_LEVEL);
+        preferences.set_media_duck_level(0.65);
+        assert_eq!(preferences.media_duck_level(), 0.65);
+        preferences.set_media_duck_level(0.01);
+        assert_eq!(preferences.media_duck_level(), MIN_MEDIA_DUCK_LEVEL);
+        preferences.set_media_duck_level(1.0);
+        assert_eq!(preferences.media_duck_level(), MAX_MEDIA_DUCK_LEVEL);
+        preferences.set_media_duck_level(f64::NAN);
+        assert_eq!(preferences.media_duck_level(), MAX_MEDIA_DUCK_LEVEL);
     }
 
     #[test]

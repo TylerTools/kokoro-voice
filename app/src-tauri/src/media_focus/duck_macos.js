@@ -42,14 +42,21 @@ function playingApp(bundleID) {
   }
 }
 
+function duckLevel() {
+  const raw = $.NSProcessInfo.processInfo.environment.objectForKey('HEREWORD_DUCK_LEVEL');
+  const value = raw.isNil() ? NaN : Number(ObjC.unwrap(raw));
+  return Number.isFinite(value) ? Math.min(0.95, Math.max(0.40, value)) : 0.80;
+}
+
 function run() {
   const changed = [];
+  const level = duckLevel();
   try {
     for (const bundleID of ['com.spotify.client', 'com.apple.Music']) {
       const entry = playingApp(bundleID);
       if (!entry) continue;
       changed.push(entry);
-      const target = Math.max(1, Math.round(entry.original * 0.60));
+      const target = Math.max(1, Math.round(entry.original * level));
       fade(entry, entry.original, target);
     }
     writeReady();

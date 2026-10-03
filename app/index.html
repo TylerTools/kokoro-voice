@@ -152,6 +152,15 @@
         <small id="media-mode-help">Fade down lowers Spotify and Music on Mac, or other app audio on Windows, then fades it back. Pause keeps the existing behavior.</small>
       </label>
 
+      <label class="field" id="media-duck-level-row" hidden>
+        <span>Music volume during fade</span>
+        <div class="range-row">
+          <input id="media-duck-level" type="range" min="40" max="95" step="5" aria-label="Music volume during fade, percent of original" />
+          <output id="media-duck-level-label" for="media-duck-level">80%</output>
+        </div>
+        <small>Percent of its starting volume. Your music returns to its previous level afterward.</small>
+      </label>
+
       <label class="field">
         <span class="check-label"><input id="launch-at-login" type="checkbox" /> Launch at login</span>
       </label>

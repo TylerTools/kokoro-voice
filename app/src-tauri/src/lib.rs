@@ -18,8 +18,8 @@ mod media_controls;
 mod media_focus;
 
 #[cfg(target_os = "windows")]
-pub fn run_audio_quiet_worker(root: u32, duck: bool) {
-    media_focus::run_quiet_worker(root, duck);
+pub fn run_audio_quiet_worker(root: u32, duck: bool, level: f64) {
+    media_focus::run_quiet_worker(root, duck, level);
 }
 #[cfg(target_os = "macos")]
 mod microphone_permission;
@@ -617,6 +617,7 @@ fn set_prefs(
     cue_volume: Option<f64>,
     live_preview: Option<bool>,
     media_mode: Option<String>,
+    media_duck_level: Option<f64>,
 ) -> Result<serde_json::Value, String> {
     let mut preferences = preferences::Preferences::load(&prefs_file());
     preferences.set_general(voice, speed, cue_enabled, cue_volume, live_preview);
@@ -624,6 +625,9 @@ fn set_prefs(
         let mode = preferences::MediaMode::parse(&mode)
             .ok_or_else(|| "Choose a valid other-audio setting.".to_string())?;
         preferences.set_media_mode(mode);
+    }
+    if let Some(level) = media_duck_level {
+        preferences.set_media_duck_level(level);
     }
     let value = preferences.into_value();
     write_json_atomic(&prefs_file(), &value)?;
@@ -2693,8 +2697,9 @@ fn stop_managed_playback(app: &AppHandle) {
 }
 
 fn acquire_media_focus(app: &AppHandle) -> Option<media_focus::Lease> {
+    let preferences = preferences::Preferences::load(&prefs_file());
     app.try_state::<Arc<media_focus::MediaFocus>>()?
-        .acquire(preferences::Preferences::load(&prefs_file()).media_mode())
+        .acquire(preferences.media_mode(), preferences.media_duck_level())
 }
 
 fn stop_managed_dictation(app: &AppHandle) {
