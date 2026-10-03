@@ -1,45 +1,11 @@
-// Owns temporary volume changes for playing Spotify and Music sessions only.
-// Standard input is the parent-lifetime lease: EOF fades back after a crash.
-// Never changes the Mac output device or its master volume.
+// Temporarily adjust playing Spotify and Music sessions. The parent holds
+// stdin open for the lease; EOF restores their original app volumes.
+// Never changes the Mac output device or master volume.
 ObjC.import('Foundation');
 
-function writeReady(count) {
-  const data = $.NSString.stringWithString(`READY ${count}\n`).dataUsingEncoding($.NSUTF8StringEncoding);
+function writeLine(line) {
+  const data = $.NSString.stringWithString(`${line}\n`).dataUsingEncoding($.NSUTF8StringEncoding);
   $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
-}
-
-function fade(entry, from, to, restoring = false) {
-  let expected = from;
-  let previous = from;
-  for (let step = 1; step <= 8; step++) {
-    if (!entry.app.running()) return false;
-    const actual = entry.app.soundVolume();
-    // Spotify may report the previous ramp step while a volume write settles.
-    // Allow that lag on the way back up, while still honoring a larger manual change.
-    const tolerance = restoring ? Math.max(3, Math.abs(expected - previous) + 2) : 2;
-    if (typeof actual !== 'number' || Math.abs(actual - expected) > tolerance) return false;
-    const progress = step / 8;
-    const smooth = progress * progress * (3 - 2 * progress);
-    const next = Math.round(from + (to - from) * smooth);
-    entry.app.soundVolume = next;
-    previous = expected;
-    expected = next;
-    entry.applied = next;
-    delay(0.06);
-  }
-  return true;
-}
-
-function playingApp(bundleID) {
-  try {
-    const app = Application(bundleID);
-    if (!app.running() || app.playerState() !== 'playing') return null;
-    const volume = app.soundVolume();
-    if (typeof volume !== 'number' || volume <= 0 || volume > 100) return null;
-    return { app, original: volume, applied: volume };
-  } catch (_) {
-    return null;
-  }
 }
 
 function duckLevel() {
@@ -48,28 +14,100 @@ function duckLevel() {
   return Number.isFinite(value) ? Math.min(0.95, Math.max(0.40, value)) : 0.80;
 }
 
+function owned(entry, volume) {
+  // Spotify may report an older ramp step for a short time. Every volume we
+  // wrote is between these bounds; a value outside them is a manual change.
+  return typeof volume === 'number' &&
+    volume >= Math.min(entry.original, entry.target) - 2 &&
+    volume <= Math.max(entry.original, entry.target) + 2;
+}
+
+function fade(entry, from, to) {
+  for (let step = 1; step <= 8; step++) {
+    if (!entry.app.running() || !owned(entry, entry.app.soundVolume())) return false;
+    const progress = step / 8;
+    const smooth = progress * progress * (3 - 2 * progress);
+    entry.app.soundVolume = Math.round(from + (to - from) * smooth);
+    delay(0.06);
+  }
+  return true;
+}
+
+function playingApp(bundleID, level) {
+  try {
+    const app = Application(bundleID);
+    if (!app.running() || app.playerState() !== 'playing') return null;
+    const original = app.soundVolume();
+    if (typeof original !== 'number' || original <= 0 || original > 100) return null;
+    return {
+      app,
+      player: bundleID === 'com.spotify.client' ? 'spotify' : 'music',
+      original,
+      target: Math.max(1, Math.round(original * level)),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function restore(entry) {
+  try {
+    if (!entry.app.running()) return { player: entry.player, original: entry.original, restored: false, reason: 'closed' };
+    // Let Spotify settle the last fade-down write before reading its volume.
+    delay(0.12);
+    let actual = entry.app.soundVolume();
+    if (!owned(entry, actual)) {
+      return { player: entry.player, original: entry.original, actual, restored: false, reason: 'volume-changed' };
+    }
+    if (!fade(entry, actual, entry.original)) {
+      actual = entry.app.soundVolume();
+      return { player: entry.player, original: entry.original, actual, restored: false, reason: 'fade-interrupted' };
+    }
+    // Spotify's setter can read back one point lower than requested. Correct
+    // against its measured value instead of repeating the same wrong write.
+    let command = entry.original;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      actual = entry.app.soundVolume();
+      if (!owned(entry, actual)) {
+        return { player: entry.player, original: entry.original, actual, restored: false, reason: 'volume-changed' };
+      }
+      if (actual === entry.original) {
+        delay(0.18);
+        if (entry.app.soundVolume() === entry.original) {
+          return { player: entry.player, original: entry.original, actual: entry.original, restored: true };
+        }
+      }
+      if (Math.abs(entry.original - actual) <= 3) {
+        command = Math.max(0, Math.min(100, command + entry.original - actual));
+      } else {
+        command = entry.original;
+      }
+      entry.app.soundVolume = command;
+      delay(0.14);
+    }
+    actual = entry.app.soundVolume();
+    return { player: entry.player, original: entry.original, actual, restored: actual === entry.original };
+  } catch (_) {
+    return { player: entry.player, original: entry.original, restored: false, reason: 'control-error' };
+  }
+}
+
 function run() {
   const changed = [];
-  let ducked = 0;
   const level = duckLevel();
+  let ducked = 0;
   try {
     for (const bundleID of ['com.spotify.client', 'com.apple.Music']) {
-      const entry = playingApp(bundleID);
+      const entry = playingApp(bundleID, level);
       if (!entry) continue;
       changed.push(entry);
-      const target = Math.max(1, Math.round(entry.original * level));
-      if (fade(entry, entry.original, target)) ducked++;
+      if (fade(entry, entry.original, entry.target)) ducked++;
     }
-    writeReady(ducked);
+    writeLine(`READY ${ducked}`);
     $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
   } finally {
-    for (const entry of changed) {
-      try {
-        if (entry.app.running() && Math.abs(entry.app.soundVolume() - entry.applied) <= 2) {
-          fade(entry, entry.applied, entry.original, true);
-        }
-      } catch (_) { /* A closed player needs no volume change. */ }
-    }
+    const results = changed.map(restore);
+    writeLine(`RESTORE ${JSON.stringify(results)}`);
   }
 }
 

@@ -60,9 +60,13 @@ mod duck_macos {
     use super::super::QuietAudio;
     use std::io::BufRead;
     use std::process::{Child, Command, Stdio};
+    use std::sync::mpsc::Receiver;
     use std::time::Duration;
 
-    pub(super) struct Duck(Option<Child>);
+    pub(super) struct Duck {
+        child: Option<Child>,
+        status: Receiver<String>,
+    }
     impl Duck {
         pub(super) fn start(level: f64) -> Option<Self> {
             let mut child = Command::new("/usr/bin/osascript")
@@ -76,12 +80,17 @@ mod duck_macos {
             let stdout = child.stdout.take()?;
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let mut line = String::new();
-                let _ = std::io::BufReader::new(stdout).read_line(&mut line);
-                let _ = tx.send(line);
+                for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
             });
-            let duck = Self(Some(child));
-            match rx.recv_timeout(Duration::from_secs(3)) {
+            let duck = Self {
+                child: Some(child),
+                status: rx,
+            };
+            match duck.status.recv_timeout(Duration::from_secs(3)) {
                 Ok(line) if line.trim().starts_with("READY ") => {
                     let players = line
                         .trim()
@@ -103,19 +112,32 @@ mod duck_macos {
     }
     impl QuietAudio for Duck {
         fn refresh(&mut self) {
-            if let Some(child) = self.0.as_mut() {
+            if let Some(child) = self.child.as_mut() {
                 let _ = child.try_wait();
             }
         }
     }
     impl Drop for Duck {
         fn drop(&mut self) {
-            if let Some(mut child) = self.0.take() {
+            if let Some(mut child) = self.child.take() {
                 child.stdin.take();
                 // Wait for fade-back before another lease can capture a new
                 // baseline. Detached restores can overlap the next duck and
                 // repeatedly lower music that was already quieted.
-                let _ = child.wait();
+                let exit = child.wait();
+                let outcomes = self
+                    .status
+                    .recv_timeout(Duration::from_millis(500))
+                    .ok()
+                    .and_then(|line| line.strip_prefix("RESTORE ").map(str::to_owned))
+                    .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+                crate::structured_log(
+                    "media-duck-stop",
+                    serde_json::json!({
+                        "helper_ok": exit.is_ok_and(|status| status.success()),
+                        "outcomes": outcomes,
+                    }),
+                );
             }
         }
     }
