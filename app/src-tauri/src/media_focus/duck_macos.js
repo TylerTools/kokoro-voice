@@ -101,6 +101,9 @@ function run() {
       const entry = playingApp(bundleID, level);
       if (!entry) continue;
       changed.push(entry);
+      // Give the parent the original volume before the first adjustment, so
+      // it can recover if this helper is killed during a fade.
+      writeLine(`BASELINE ${JSON.stringify({ player: entry.player, original: entry.original, target: entry.target })}`);
       if (fade(entry, entry.original, entry.target)) ducked++;
     }
     writeLine(`READY ${ducked}`);

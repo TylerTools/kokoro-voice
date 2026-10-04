@@ -61,11 +61,19 @@ mod duck_macos {
     use std::io::BufRead;
     use std::process::{Child, Command, Stdio};
     use std::sync::mpsc::Receiver;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone, serde::Deserialize, serde::Serialize)]
+    struct Baseline {
+        player: String,
+        original: i32,
+        target: i32,
+    }
 
     pub(super) struct Duck {
         child: Option<Child>,
         status: Receiver<String>,
+        baselines: Vec<Baseline>,
     }
     impl Duck {
         pub(super) fn start(level: f64) -> Option<Self> {
@@ -80,35 +88,95 @@ mod duck_macos {
             let stdout = child.stdout.take()?;
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                for line in std::io::BufReader::new(stdout)
+                    .lines()
+                    .map_while(Result::ok)
+                {
                     if tx.send(line).is_err() {
                         break;
                     }
                 }
             });
-            let duck = Self {
+            let mut duck = Self {
                 child: Some(child),
                 status: rx,
+                baselines: Vec::new(),
             };
-            match duck.status.recv_timeout(Duration::from_secs(3)) {
-                Ok(line) if line.trim().starts_with("READY ") => {
-                    let players = line
-                        .trim()
-                        .strip_prefix("READY ")
-                        .and_then(|count| count.parse::<usize>().ok())
-                        .unwrap_or(0);
-                    crate::structured_log(
-                        "media-duck-start",
-                        serde_json::json!({"players": players, "level": level}),
-                    );
-                    if players > 0 { Some(duck) } else { None }
-                }
-                _ => {
-                    crate::structured_log("media-duck-unavailable", serde_json::json!({}));
-                    None
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match duck.status.recv_timeout(remaining) {
+                    Ok(line) if line.starts_with("BASELINE ") => {
+                        if let Some(entry) = line
+                            .strip_prefix("BASELINE ")
+                            .and_then(|json| serde_json::from_str::<Baseline>(json).ok())
+                        {
+                            duck.baselines.push(entry);
+                        }
+                    }
+                    Ok(line) if line.starts_with("READY ") => {
+                        let players = line
+                            .trim()
+                            .strip_prefix("READY ")
+                            .and_then(|count| count.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        crate::structured_log(
+                            "media-duck-start",
+                            serde_json::json!({"players": players, "level": level}),
+                        );
+                        return if players > 0 { Some(duck) } else { None };
+                    }
+                    _ => {
+                        crate::structured_log("media-duck-unavailable", serde_json::json!({}));
+                        return None;
+                    }
                 }
             }
         }
+    }
+
+    fn wait_bounded(child: &mut Child, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+            }
+        }
+    }
+
+    fn recover(baselines: &[Baseline]) -> Option<serde_json::Value> {
+        if baselines.is_empty() {
+            return None;
+        }
+        let mut child = Command::new("/usr/bin/osascript")
+            .args([
+                "-l",
+                "JavaScript",
+                "-e",
+                include_str!("duck_restore_macos.js"),
+            ])
+            .env(
+                "HEREWORD_DUCK_RECOVERY",
+                serde_json::to_string(baselines).ok()?,
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        if !wait_bounded(&mut child, Duration::from_secs(3)) {
+            return None;
+        }
+        let output = child.wait_with_output().ok()?;
+        serde_json::from_slice(&output.stdout).ok()
     }
     impl QuietAudio for Duck {
         fn refresh(&mut self) {
@@ -124,21 +192,50 @@ mod duck_macos {
                 // Wait for fade-back before another lease can capture a new
                 // baseline. Detached restores can overlap the next duck and
                 // repeatedly lower music that was already quieted.
-                let exit = child.wait();
+                let helper_ok = wait_bounded(&mut child, Duration::from_secs(4));
                 let outcomes = self
                     .status
                     .recv_timeout(Duration::from_millis(500))
                     .ok()
                     .and_then(|line| line.strip_prefix("RESTORE ").map(str::to_owned))
                     .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+                let confirmed = helper_ok
+                    && outcomes
+                        .as_ref()
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|items| {
+                            items.len() == self.baselines.len()
+                                && items.iter().all(|item| item["restored"] == true)
+                        });
+                let recovery = if confirmed {
+                    None
+                } else {
+                    recover(&self.baselines)
+                };
                 crate::structured_log(
                     "media-duck-stop",
                     serde_json::json!({
-                        "helper_ok": exit.is_ok_and(|status| status.success()),
+                        "helper_ok": helper_ok,
                         "outcomes": outcomes,
+                        "recovery": recovery,
+                        "restoration_confirmed": confirmed,
                     }),
                 );
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn stalled_helper_is_killed_and_reaped() {
+            let mut child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+            let started = Instant::now();
+            assert!(!wait_bounded(&mut child, Duration::from_millis(50)));
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(child.try_wait().unwrap().is_some());
         }
     }
 }

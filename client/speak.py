@@ -131,6 +131,7 @@ _CANCELLED = threading.Event()
 _REOPEN_OUTPUT = threading.Event()
 _OUTPUT_STREAM = None
 _OUTPUT_FORMAT = None
+_OUTPUT_ROUTE = None
 _AUDIO_UNDERFLOWS = 0
 _OUTPUT_REOPENS = 0
 
@@ -575,9 +576,10 @@ def toggle_playback() -> str:
 
 def _close_output_stream(*, abort: bool = False) -> None:
     """Drain completed speech, but discard queued audio on cancellation."""
-    global _OUTPUT_STREAM, _OUTPUT_FORMAT
+    global _OUTPUT_STREAM, _OUTPUT_FORMAT, _OUTPUT_ROUTE
     stream, _OUTPUT_STREAM = _OUTPUT_STREAM, None
     _OUTPUT_FORMAT = None
+    _OUTPUT_ROUTE = None
     if stream is not None:
         try:
             if abort:
@@ -588,8 +590,38 @@ def _close_output_stream(*, abort: bool = False) -> None:
             stream.close()
 
 
+def _default_output_route(sd):
+    """Observe the OS default output; never select or change a device."""
+    if IS_MAC:
+        try:
+            import ctypes
+
+            class Address(ctypes.Structure):
+                _fields_ = [("selector", ctypes.c_uint32),
+                            ("scope", ctypes.c_uint32),
+                            ("element", ctypes.c_uint32)]
+
+            address = Address(int.from_bytes(b"dOut", "big"),
+                              int.from_bytes(b"glob", "big"), 0)
+            value = ctypes.c_uint32()
+            size = ctypes.c_uint32(ctypes.sizeof(value))
+            core_audio = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+            if core_audio.AudioObjectGetPropertyData(
+                1, ctypes.byref(address), 0, None,
+                ctypes.byref(size), ctypes.byref(value)
+            ) == 0:
+                return ("coreaudio", value.value)
+        except (OSError, AttributeError):
+            pass
+    try:
+        device = sd.query_devices(kind="output")
+        return (device.get("name"), device.get("hostapi"))
+    except (AttributeError, ValueError):
+        return None
+
+
 def _play_file(path: str) -> None:
-    global _OUTPUT_STREAM, _OUTPUT_FORMAT, _AUDIO_UNDERFLOWS, _OUTPUT_REOPENS
+    global _OUTPUT_STREAM, _OUTPUT_FORMAT, _OUTPUT_ROUTE, _AUDIO_UNDERFLOWS, _OUTPUT_REOPENS
     if _CANCELLED.is_set():
         raise PlaybackCancelled
     if IS_MAC or IS_WIN:
@@ -603,6 +635,10 @@ def _play_file(path: str) -> None:
         for offset in range(0, len(samples), 2048):
             if _CANCELLED.is_set():
                 raise PlaybackCancelled
+            route = _default_output_route(sd)
+            if (_OUTPUT_STREAM is not None and route is not None and
+                    _OUTPUT_ROUTE is not None and route != _OUTPUT_ROUTE):
+                _REOPEN_OUTPUT.set()
             if _REOPEN_OUTPUT.is_set():
                 _close_output_stream(abort=True)
                 _REOPEN_OUTPUT.clear()
@@ -615,6 +651,7 @@ def _play_file(path: str) -> None:
                 )
                 _OUTPUT_FORMAT = audio_format
                 _OUTPUT_STREAM.start()
+                _OUTPUT_ROUTE = route
             try:
                 if _OUTPUT_STREAM.write(samples[offset:offset + 2048]):
                     _AUDIO_UNDERFLOWS += 1

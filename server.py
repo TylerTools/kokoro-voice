@@ -324,7 +324,8 @@ def _drop_hallucinated(text: str) -> str:
 
 @app.post("/transcribe")
 async def transcribe(request: Request,
-                     authorization: str | None = Header(default=None)) -> dict:
+                     authorization: str | None = Header(default=None),
+                     x_hereword_preview: str | None = Header(default=None)) -> dict:
     """Raw WAV bytes in, text out.
 
     Audio is sent as a WAV body rather than multipart to keep the client
@@ -338,10 +339,12 @@ async def transcribe(request: Request,
     # Whisper is synchronous and can take tens of seconds on a long Windows
     # dictation. Running it on the ASGI event loop made /health unreachable;
     # the desktop watchdog then killed the healthy engine mid-transcription.
+    if x_hereword_preview == "1":
+        return await run_in_threadpool(_transcribe_audio, raw, True)
     return await run_in_threadpool(_transcribe_audio, raw)
 
 
-def _transcribe_audio(raw: bytes) -> dict:
+def _transcribe_audio(raw: bytes, preview: bool = False) -> dict:
     import numpy as np
 
     try:
@@ -366,7 +369,9 @@ def _transcribe_audio(raw: bytes) -> dict:
                 "transcribe_seconds": 0.0}
 
     try:
-        result = _stt_worker.transcribe(audio.astype("float32", copy=False).tobytes())
+        samples = audio.astype("float32", copy=False).tobytes()
+        result = (_stt_worker.transcribe(samples, preview=True) if preview
+                  else _stt_worker.transcribe(samples))
     except SttWorkerError as error:
         raise HTTPException(
             status_code=503, detail=f"speech recognition worker failed: {error}"

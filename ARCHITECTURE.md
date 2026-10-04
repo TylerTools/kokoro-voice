@@ -171,6 +171,10 @@ its starting volume (80% by default), then returns to that starting level.
 On macOS it controls playing Spotify or Apple Music without changing the system
 output volume. The fade helper completes its return before another lease
 captures a baseline, so quick successive Reads cannot compound the reduction.
+The helper sends each app-volume baseline before writing it. Shutdown has a
+bounded wait; if the helper stalls or restoration is unconfirmed, a bounded
+recovery attempt checks that the app volume is still within HereWord's owned
+range before restoring. A manual volume outside that range is left alone.
 
 Platform adapters stay under `media_focus/`. macOS uses its active Now Playing
 player through the system JXA host and MediaRemote; Windows enumerates sessions
@@ -223,6 +227,8 @@ ellipsis because the recovery action is the reason the notice exists.
    remains responsive.
    Live preview starts after three seconds of recording. Short takes use only
    the final pass, so their result cannot queue behind a redundant preview.
+   Preview requests carry `X-HereWord-Preview: 1`; a final request cancels an
+   active preview worker and takes priority over waiting previews.
 4. Preview revisions are applied only while `text_backend.rs` proves target,
    process scope, owned text, selection, and caret invariants.
 5. Any focus/manual-edit/unsupported-control mismatch permanently falls back to
@@ -324,6 +330,8 @@ Whisper is not loaded at general application startup. The main engine warms a
 recyclable `tts_worker.py` child and launches `stt_worker.py` only for voiced
 Dictation audio. A serialized parent/worker exchange accounts for each active request; the
 same lock protects the idle timer, so expiry cannot terminate a transcription.
+The pipe exchange has a 115-second deadline. A worker that stays alive without
+answering is killed and reaped so a later dictation starts a fresh worker.
 The first cold transcription gets a 90-second idle lease. A warm repeat extends
 the current burst to 180 seconds, balancing rapid follow-up dictation against
 the roughly 2.36 GB warm STT footprint. `KOKORO_STT_BASE_IDLE_SECONDS` and

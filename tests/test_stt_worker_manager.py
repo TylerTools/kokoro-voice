@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest import mock
 
-from stt_worker_manager import SttWorkerManager
+from stt_worker_manager import SttWorkerManager, SttWorkerTimeoutError
 
 
 def framed_response() -> bytes:
@@ -65,7 +65,98 @@ class BlockingOutput:
         pass
 
 
+class HungProcess(FakeProcess):
+    def __init__(self):
+        self.released = threading.Event()
+        self.read_started = threading.Event()
+        super().__init__(stdout=self)
+
+    def read(self, count):
+        self.read_started.set()
+        self.released.wait()
+        return b""
+
+    def kill(self):
+        super().kill()
+        self.released.set()
+
+    def close(self):
+        pass
+
+
 class SttWorkerManagerTests(unittest.TestCase):
+    def test_final_preempts_an_active_preview(self):
+        processes = []
+        created = threading.Event()
+
+        def factory(*_args, **_kwargs):
+            process = HungProcess() if not processes else FakeProcess()
+            processes.append(process)
+            created.set()
+            return process
+
+        manager = SttWorkerManager(
+            "/tmp/stt_worker.py", idle_seconds=0,
+            exchange_timeout_seconds=5, process_factory=factory,
+        )
+        preview_errors = []
+
+        def preview():
+            try:
+                manager.transcribe(b"\0\0\0\0", preview=True)
+            except Exception as error:
+                preview_errors.append(error)
+
+        thread = threading.Thread(target=preview)
+        thread.start()
+        self.assertTrue(created.wait(1))
+        self.assertTrue(processes[0].read_started.wait(1))
+        started = time.monotonic()
+        self.assertEqual(manager.transcribe(b"\0\0\0\0")["text"], "hello")
+        self.assertLess(time.monotonic() - started, 1)
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(preview_errors)
+        self.assertEqual(processes[0].returncode, -9)
+        manager.shutdown()
+
+    def test_hung_worker_is_killed_and_next_request_starts_fresh(self):
+        processes = []
+
+        def factory(*_args, **_kwargs):
+            process = HungProcess() if not processes else FakeProcess()
+            processes.append(process)
+            return process
+
+        manager = SttWorkerManager(
+            "/tmp/stt_worker.py",
+            idle_seconds=0,
+            exchange_timeout_seconds=0.05,
+            process_factory=factory,
+        )
+        started = time.monotonic()
+        with self.assertRaises(SttWorkerTimeoutError):
+            manager.transcribe(b"\0\0\0\0")
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(processes[0].returncode, -9)
+        self.assertEqual(manager.transcribe(b"\0\0\0\0")["text"], "hello")
+        manager.shutdown()
+
+    def test_slow_cold_start_inside_deadline_is_preserved(self):
+        output = BlockingOutput()
+        process = FakeProcess(stdout=output)
+        manager = SttWorkerManager(
+            "/tmp/stt_worker.py",
+            idle_seconds=0,
+            exchange_timeout_seconds=0.5,
+            process_factory=lambda *_args, **_kwargs: process,
+        )
+        timer = threading.Timer(0.1, output.release.set)
+        timer.start()
+        self.assertEqual(manager.transcribe(b"\0\0\0\0")["text"], "hello")
+        self.assertFalse(process.terminated)
+        manager.shutdown()
+
     def test_warm_repeat_earns_the_longer_burst_lease(self):
         timers = []
 
