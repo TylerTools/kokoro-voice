@@ -16,12 +16,12 @@
     <string>HereWord records your voice so it can be transcribed to text. Audio is processed on this computer and is never uploaded or saved.</string>
 
     <key>NSAudioCaptureUsageDescription</key>
-    <string>HereWord temporarily silences other apps while recording or reading aloud. Other apps' audio is never saved or uploaded.</string>
+    <string>HereWord can temporarily quiet other apps while recording or reading aloud. Other apps' audio is never saved or uploaded.</string>
 
-    <!-- Typing a transcript into the focused app, and reading your selection,
-         both go through System Events. -->
+    <!-- Typing into the focused app, reading a selection, and controlling
+         supported players use Apple Events. -->
     <key>NSAppleEventsUsageDescription</key>
-    <string>HereWord types dictated text into the app you are working in, and reads the text you have selected.</string>
+    <string>HereWord reads selected text, types dictated text, and controls supported music players when you choose to pause or fade their audio.</string>
 
     <!-- Snip and read captures a region of the screen, OCRs it locally, and
          deletes the capture immediately. -->

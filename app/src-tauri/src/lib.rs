@@ -18,8 +18,8 @@ mod media_controls;
 mod media_focus;
 
 #[cfg(target_os = "windows")]
-pub fn run_audio_quiet_worker(root: u32) {
-    media_focus::run_quiet_worker(root);
+pub fn run_audio_quiet_worker(root: u32, duck: bool, level: f64) {
+    media_focus::run_quiet_worker(root, duck, level);
 }
 #[cfg(target_os = "macos")]
 mod microphone_permission;
@@ -395,9 +395,10 @@ fn find_or_install_uv(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     {
         let file = std::fs::File::open(&archive).map_err(|e| e.to_string())?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        let mut source = zip
-            .by_name("uv-x86_64-pc-windows-msvc/uv.exe")
-            .map_err(|e| e.to_string())?;
+        let flat = zip.by_name("uv.exe").is_ok();
+        let prefixed = zip.by_name("uv-x86_64-pc-windows-msvc/uv.exe").is_ok();
+        let entry = windows_uv_archive_entry(flat, prefixed)?;
+        let mut source = zip.by_name(entry).map_err(|e| e.to_string())?;
         let mut output = std::fs::File::create(&executable).map_err(|e| e.to_string())?;
         std::io::copy(&mut source, &mut output).map_err(|e| e.to_string())?;
     }
@@ -422,6 +423,20 @@ fn find_or_install_uv(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .exists()
         .then_some(executable)
         .ok_or_else(|| "verified Python manager archive did not contain uv".into())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_uv_archive_entry(
+    has_flat_entry: bool,
+    has_prefixed_entry: bool,
+) -> Result<&'static str, String> {
+    if has_flat_entry {
+        Ok("uv.exe")
+    } else if has_prefixed_entry {
+        Ok("uv-x86_64-pc-windows-msvc/uv.exe")
+    } else {
+        Err("verified Python manager archive did not contain uv.exe".into())
+    }
 }
 
 /// Build the engine into Application Support.
@@ -601,12 +616,18 @@ fn set_prefs(
     cue_enabled: Option<bool>,
     cue_volume: Option<f64>,
     live_preview: Option<bool>,
-    pause_other_media: Option<bool>,
+    media_mode: Option<String>,
+    media_duck_level: Option<f64>,
 ) -> Result<serde_json::Value, String> {
     let mut preferences = preferences::Preferences::load(&prefs_file());
     preferences.set_general(voice, speed, cue_enabled, cue_volume, live_preview);
-    if let Some(enabled) = pause_other_media {
-        preferences.set("pause_other_media", serde_json::Value::Bool(enabled));
+    if let Some(mode) = media_mode {
+        let mode = preferences::MediaMode::parse(&mode)
+            .ok_or_else(|| "Choose a valid other-audio setting.".to_string())?;
+        preferences.set_media_mode(mode);
+    }
+    if let Some(level) = media_duck_level {
+        preferences.set_media_duck_level(level);
     }
     let value = preferences.into_value();
     write_json_atomic(&prefs_file(), &value)?;
@@ -1686,6 +1707,31 @@ fn run_client_monitored(
                 })
         });
         drop(dictation_guard);
+        // A paused Read can remain alive indefinitely. Keep its music fade only
+        // while speech is actually playing, including accessory pause/resume.
+        let focus_stop = Arc::new(AtomicBool::new(false));
+        let focus_watcher = generation.map(|current_generation| {
+            let app = app2.clone();
+            let stop = focus_stop.clone();
+            std::thread::spawn(move || {
+                let mut lease = media_lease;
+                while !stop.load(Ordering::SeqCst) {
+                    let Some(manager) = app.try_state::<playback::PlaybackManager>() else {
+                        break;
+                    };
+                    if !manager.is_current(current_generation) {
+                        break;
+                    }
+                    match manager.state() {
+                        "playing" if lease.is_none() => lease = acquire_media_focus(&app),
+                        "paused" | "stopping" => drop(lease.take()),
+                        _ => {}
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                drop(lease);
+            })
+        });
         let (generation, output) = match child {
             Ok(mut child) => {
                 let input_result = stdin_payload.as_deref().map(|text| {
@@ -1710,11 +1756,31 @@ fn run_client_monitored(
             Err(error) => (generation, Err(error.to_string())),
         };
         // Audio has ended even if a notice remains visible afterwards.
-        drop(media_lease);
+        focus_stop.store(true, Ordering::SeqCst);
+        if let Some(watcher) = focus_watcher {
+            let _ = watcher.join();
+        }
         let notice = match output {
-            Ok(result) => String::from_utf8_lossy(&result.stdout)
-                .lines()
-                .find_map(|line| line.strip_prefix("NOTICE ").map(str::to_owned)),
+            Ok(result) => {
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                for line in stdout.lines() {
+                    if let Some(stats) = line.strip_prefix("AUDIO_STATS ") {
+                        let fields = stats
+                            .split_whitespace()
+                            .filter_map(|part| part.split_once('='))
+                            .filter_map(|(key, value)| {
+                                matches!(key, "underflows" | "reopens")
+                                    .then(|| value.parse::<u32>().ok().map(|value| (key, value)))
+                                    .flatten()
+                            })
+                            .collect::<std::collections::HashMap<_, _>>();
+                        structured_log("speech-audio-stats", serde_json::json!(fields));
+                    }
+                }
+                stdout
+                    .lines()
+                    .find_map(|line| line.strip_prefix("NOTICE ").map(str::to_owned))
+            }
             Err(error) => {
                 eprintln!("could not start HereWord playback: {error}");
                 Some("HereWord couldn't start. Open Settings.".into())
@@ -1994,7 +2060,7 @@ fn set_clipboard(text: &str) {
     use std::io::Write;
     // Clipboard is the durable fallback; SendKeys performs the immediate paste
     // without interpolating dictated text into PowerShell source.
-    let mut copy = Command::new("powershell")
+    let mut copy = Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-Command",
@@ -2671,13 +2737,14 @@ fn stop_managed_playback(app: &AppHandle) {
         let _ = manager.stop();
     }
     if let Some(focus) = app.try_state::<Arc<media_focus::MediaFocus>>() {
-        focus.shutdown();
+        focus.release_all();
     }
 }
 
 fn acquire_media_focus(app: &AppHandle) -> Option<media_focus::Lease> {
+    let preferences = preferences::Preferences::load(&prefs_file());
     app.try_state::<Arc<media_focus::MediaFocus>>()?
-        .acquire(preferences::Preferences::load(&prefs_file()).pause_other_media())
+        .acquire(preferences.media_mode(), preferences.media_duck_level())
 }
 
 fn stop_managed_dictation(app: &AppHandle) {
@@ -3172,6 +3239,17 @@ mod live_dictation_tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_uv_archive_accepts_current_flat_and_legacy_prefixed_layouts() {
+        assert_eq!(windows_uv_archive_entry(true, false).unwrap(), "uv.exe");
+        assert_eq!(
+            windows_uv_archive_entry(false, true).unwrap(),
+            "uv-x86_64-pc-windows-msvc/uv.exe"
+        );
+        assert!(windows_uv_archive_entry(false, false).is_err());
     }
 
     fn temporary_engine_root(label: &str) -> std::path::PathBuf {

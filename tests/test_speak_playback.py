@@ -36,6 +36,7 @@ class SpeakPlaybackTests(unittest.TestCase):
     def setUp(self):
         self.speak._close_output_stream(abort=True)
         self.speak._CANCELLED.clear()
+        self.speak._REOPEN_OUTPUT.clear()
         for path in pathlib.Path(self.temp.name).iterdir():
             if path.name != "playback.lock":
                 path.unlink()
@@ -74,6 +75,40 @@ class SpeakPlaybackTests(unittest.TestCase):
         stream.abort.assert_called_once()
         stream.close.assert_called_once()
         stream.stop.assert_not_called()
+
+    def test_resume_reopens_output_stream_before_next_audio_block(self):
+        class Frames(list):
+            shape = (2, 1)
+
+        first, second = mock.Mock(), mock.Mock()
+        device = types.SimpleNamespace(OutputStream=mock.Mock(side_effect=[first, second]))
+        files = types.SimpleNamespace(read=mock.Mock(return_value=(Frames([0.1, 0.2]), 24000)))
+        with mock.patch.dict("sys.modules", sounddevice=device, soundfile=files):
+            self.speak._play_file("first.wav")
+            self.speak._REOPEN_OUTPUT.set()
+            self.speak._play_file("second.wav")
+            self.speak._close_output_stream()
+        self.assertEqual(device.OutputStream.call_count, 2)
+        first.abort.assert_called_once()
+        second.write.assert_called_once()
+
+    def test_os_route_change_reopens_during_uninterrupted_read(self):
+        class Frames(list):
+            shape = (4096, 1)
+
+        first, second = mock.Mock(), mock.Mock()
+        device = types.SimpleNamespace(OutputStream=mock.Mock(side_effect=[first, second]))
+        files = types.SimpleNamespace(read=mock.Mock(return_value=(Frames([0.1] * 4096), 24000)))
+        with (
+            mock.patch.dict("sys.modules", sounddevice=device, soundfile=files),
+            mock.patch.object(self.speak, "_default_output_route", side_effect=[("mac", 1), ("airpods", 2)]),
+        ):
+            self.speak._play_file("long.wav")
+            self.speak._close_output_stream()
+        self.assertEqual(device.OutputStream.call_count, 2)
+        self.assertEqual(first.write.call_count, 1)
+        first.abort.assert_called_once()
+        self.assertEqual(second.write.call_count, 1)
 
     def test_playback_waits_for_second_chunk_without_hanging_on_single_chunk(self):
         for chunks in (["first"], ["first", "second"]):

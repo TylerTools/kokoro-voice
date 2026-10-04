@@ -152,6 +152,23 @@ class VariantIsolationTests(unittest.TestCase):
             self.assertIn('f"kokoro-voice-2-1-{who}"', client)
         self.assertIn('f"kokoro-voice-2-1-{who}"', snip)
 
+    def test_windows_helpers_resolve_the_real_powershell_executable(self):
+        paths = (
+            "client/speak.py",
+            "client/snip.py",
+            "app/src-tauri/src/lib.rs",
+            "app/src-tauri/src/runtime.rs",
+            "app/src-tauri/src/runtime_hygiene.rs",
+            "app/src-tauri/tauri.windows-release.conf.json",
+        )
+        for path in paths:
+            source = (ROOT / path).read_text()
+            self.assertIn("powershell.exe", source, path)
+            self.assertNotIn('"powershell"', source, path)
+        snip = (ROOT / "client/snip.py").read_text()
+        self.assertIn("([Windows.Storage.Streams.IRandomAccessStream])", snip)
+        self.assertNotIn("IRandomAccessStreamWithContentType", snip)
+
     def test_disposable_stt_worker_is_bundled_and_not_started_during_warmup(self):
         config = (ROOT / "app/src-tauri/tauri.conf.json").read_text()
         lib = (ROOT / "app/src-tauri/src/lib.rs").read_text()

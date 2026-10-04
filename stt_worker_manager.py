@@ -15,6 +15,7 @@ from typing import BinaryIO, Callable
 
 MAX_FRAME_BYTES = 64 * 1024
 SHUTDOWN_TIMEOUT_SECONDS = 5
+EXCHANGE_TIMEOUT_SECONDS = 115
 
 
 class SttWorkerError(RuntimeError):
@@ -22,6 +23,14 @@ class SttWorkerError(RuntimeError):
 
 
 class SttWorkerProtocolError(SttWorkerError):
+    pass
+
+
+class SttWorkerTimeoutError(SttWorkerError):
+    pass
+
+
+class SttPreviewCancelled(SttWorkerError):
     pass
 
 
@@ -46,12 +55,15 @@ class SttWorkerManager:
         *,
         idle_seconds: float = 90,
         repeat_idle_seconds: float | None = None,
+        exchange_timeout_seconds: float = EXCHANGE_TIMEOUT_SECONDS,
         process_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
     ) -> None:
         if idle_seconds < 0:
             raise ValueError("idle_seconds must be zero or positive")
         if repeat_idle_seconds is not None and repeat_idle_seconds < 0:
             raise ValueError("repeat_idle_seconds must be zero or positive")
+        if exchange_timeout_seconds <= 0:
+            raise ValueError("exchange_timeout_seconds must be positive")
         self.worker_script = str(Path(worker_script))
         self.idle_seconds = idle_seconds
         self.repeat_idle_seconds = (
@@ -59,7 +71,11 @@ class SttWorkerManager:
         )
         self._current_idle_seconds = idle_seconds
         self._process_factory = process_factory
+        self.exchange_timeout_seconds = exchange_timeout_seconds
         self._lock = threading.Lock()
+        self._priority_lock = threading.Lock()
+        self._final_waiters = 0
+        self._active_preview: subprocess.Popen | None = None
         self._process: subprocess.Popen | None = None
         self._timer: threading.Timer | None = None
         self._timer_generation = 0
@@ -181,20 +197,80 @@ class SttWorkerManager:
             raise SttWorkerError(response.get("error") or "speech recognition failed")
         return response
 
-    def transcribe(self, audio_float32: bytes) -> dict:
+    def _exchange_with_deadline(self, process: subprocess.Popen, audio: bytes) -> dict:
+        """Retire a worker whose pipe exchange outlives its request deadline.
+
+        Pipe reads and writes can both block even while the process is alive.
+        The I/O thread only touches this worker; killing it releases real OS
+        pipes, and the manager lock can then serve a fresh worker.
+        """
+        done = threading.Event()
+        result: list[dict] = []
+        errors: list[Exception] = []
+
+        def exchange() -> None:
+            try:
+                result.append(self._exchange(process, audio))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                done.set()
+
+        threading.Thread(target=exchange, daemon=True, name="stt-worker-exchange").start()
+        if not done.wait(self.exchange_timeout_seconds):
+            try:
+                process.kill()
+                process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise SttWorkerTimeoutError(
+                    f"speech worker exceeded {self.exchange_timeout_seconds:g}s and could not be reaped: {error}"
+                ) from error
+            done.wait(0.5)
+            raise SttWorkerTimeoutError(
+                f"speech worker exceeded {self.exchange_timeout_seconds:g}s"
+            )
+        if errors:
+            raise errors[0]
+        return result[0]
+
+    def transcribe(self, audio_float32: bytes, *, preview: bool = False) -> dict:
         """Transcribe one float32 mono 16 kHz buffer.
 
         The manager lock is held for the complete exchange. The idle callback
         uses the same lock, so it cannot terminate a worker during a request.
         """
+        if not preview:
+            with self._priority_lock:
+                self._final_waiters += 1
+                if self._active_preview is not None:
+                    try:
+                        self._active_preview.kill()
+                    except OSError:
+                        pass
+        try:
+            return self._transcribe_serial(audio_float32, preview=preview)
+        finally:
+            if not preview:
+                with self._priority_lock:
+                    self._final_waiters -= 1
+
+    def _transcribe_serial(self, audio_float32: bytes, *, preview: bool) -> dict:
         with self._lock:
             self._cancel_timer_locked()
-            self._active_requests = 1
             started_at = time.monotonic()
             try:
+                with self._priority_lock:
+                    if preview and self._final_waiters:
+                        raise SttPreviewCancelled("preview superseded by final dictation")
                 process, cold = self._start_locked()
+                if preview:
+                    with self._priority_lock:
+                        self._active_preview = process
+                        if self._final_waiters:
+                            process.kill()
+                self._active_requests = 1
                 self._state = "loading" if cold else "busy"
-                response = self._exchange(process, audio_float32)
+                response = self._exchange_with_deadline(process, audio_float32)
                 if cold:
                     request_seconds = time.monotonic() - started_at
                     model_load_seconds = response.get("model_load_seconds")
@@ -225,6 +301,9 @@ class SttWorkerManager:
                     raise
                 raise SttWorkerError(f"could not run speech worker: {error}") from error
             finally:
+                if preview:
+                    with self._priority_lock:
+                        self._active_preview = None
                 self._active_requests = 0
                 if self._state == "warm":
                     self._schedule_idle_locked()

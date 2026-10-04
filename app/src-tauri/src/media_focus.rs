@@ -2,6 +2,7 @@
 //! Leases share one interruption; only unchanged players we paused may be resumed.
 //! Player/track identity stays in memory and must never enter operational logs.
 
+use crate::preferences::MediaMode;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,8 +10,8 @@ use std::time::Duration;
 mod platform;
 
 #[cfg(target_os = "windows")]
-pub(crate) fn run_quiet_worker(root: u32) {
-    platform::run_quiet_worker(root);
+pub(crate) fn run_quiet_worker(root: u32, duck: bool, level: f64) {
+    platform::run_quiet_worker(root, duck, level);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -25,6 +26,9 @@ trait MediaPlatform: Send + Sync {
     /// Recheck identity and state immediately before sending an explicit command.
     fn set_playing(&self, expected: &Snapshot, playing: bool) -> bool;
     fn quiet(&self) -> Option<Box<dyn QuietAudio>> {
+        None
+    }
+    fn duck(&self, _level: f64) -> Option<Box<dyn QuietAudio>> {
         None
     }
 }
@@ -64,8 +68,8 @@ impl MediaFocus {
         focus
     }
 
-    pub(crate) fn acquire(self: &Arc<Self>, enabled: bool) -> Option<Lease> {
-        if !enabled {
+    pub(crate) fn acquire(self: &Arc<Self>, mode: MediaMode, duck_level: f64) -> Option<Lease> {
+        if mode == MediaMode::Off {
             return None;
         }
         let mut state = self.state.lock().ok()?;
@@ -73,13 +77,19 @@ impl MediaFocus {
             return None;
         }
         if state.leases.is_empty() {
-            state.quiet = self.platform.quiet();
+            state.quiet = match mode {
+                MediaMode::Off => None,
+                MediaMode::Pause => self.platform.quiet(),
+                MediaMode::Duck => self.platform.duck(duck_level),
+            };
             state.paused.clear();
-            if let Ok(snapshots) = self.platform.snapshots() {
-                for mut snapshot in snapshots.into_iter().filter(|s| s.playing) {
-                    if self.platform.set_playing(&snapshot, false) {
-                        snapshot.playing = false;
-                        state.paused.push(snapshot);
+            if mode == MediaMode::Pause {
+                if let Ok(snapshots) = self.platform.snapshots() {
+                    for mut snapshot in snapshots.into_iter().filter(|s| s.playing) {
+                        if self.platform.set_playing(&snapshot, false) {
+                            snapshot.playing = false;
+                            state.paused.push(snapshot);
+                        }
                     }
                 }
             }
@@ -126,6 +136,9 @@ impl MediaFocus {
     fn restore(&self, state: &mut Interruption) {
         // Remove our quieting first so restored media is immediately audible.
         state.quiet.take();
+        if state.paused.is_empty() {
+            return;
+        }
         // Each adapter verifies the same paused identity again before playing.
         let current = self.platform.snapshots().unwrap_or_default();
         if current.iter().any(|s| s.playing) {
@@ -138,6 +151,16 @@ impl MediaFocus {
         }
     }
 
+    /// Stop the current interruption without disabling future Read or Dictate
+    /// sessions. Closing the player calls this while the app keeps running.
+    pub(crate) fn release_all(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.leases.clear();
+            self.restore(&mut state);
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn shutdown(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.closed = true;
@@ -195,41 +218,41 @@ mod tests {
     #[test]
     fn disabled_and_already_paused_players_are_untouched() {
         let (focus, fake) = fixture(true);
-        assert!(focus.acquire(false).is_none());
+        assert!(focus.acquire(MediaMode::Off, 0.8).is_none());
         assert!(fake.0.lock().unwrap()[0].playing);
         fake.0.lock().unwrap()[0].playing = false;
-        drop(focus.acquire(true));
+        drop(focus.acquire(MediaMode::Pause, 0.8));
         assert!(!fake.0.lock().unwrap()[0].playing);
     }
     #[test]
     fn overlaps_restore_only_after_last_lease_and_shutdown_restores_once() {
         let (focus, fake) = fixture(true);
-        let first = focus.acquire(true);
-        let second = focus.acquire(true);
+        let first = focus.acquire(MediaMode::Pause, 0.8);
+        let second = focus.acquire(MediaMode::Pause, 0.8);
         assert!(!fake.0.lock().unwrap()[0].playing);
         drop(first);
         assert!(!fake.0.lock().unwrap()[0].playing);
         drop(second);
         assert!(fake.0.lock().unwrap()[0].playing);
-        let lease = focus.acquire(true);
+        let lease = focus.acquire(MediaMode::Pause, 0.8);
         focus.shutdown();
         assert!(fake.0.lock().unwrap()[0].playing);
         fake.0.lock().unwrap()[0].playing = false;
         drop(lease);
         assert!(!fake.0.lock().unwrap()[0].playing);
-        assert!(focus.acquire(true).is_none());
+        assert!(focus.acquire(MediaMode::Pause, 0.8).is_none());
     }
     #[test]
     fn manual_resume_then_pause_and_track_changes_revoke_ownership() {
         let (focus, fake) = fixture(true);
-        let lease = focus.acquire(true);
+        let lease = focus.acquire(MediaMode::Pause, 0.8);
         fake.0.lock().unwrap()[0].playing = true;
         focus.observe();
         fake.0.lock().unwrap()[0].playing = false;
         drop(lease);
         assert!(!fake.0.lock().unwrap()[0].playing);
         fake.0.lock().unwrap()[0].playing = true;
-        let lease = focus.acquire(true);
+        let lease = focus.acquire(MediaMode::Pause, 0.8);
         fake.0.lock().unwrap()[0].track = "two".into();
         drop(lease);
         assert!(!fake.0.lock().unwrap()[0].playing);
@@ -237,7 +260,7 @@ mod tests {
     #[test]
     fn missing_player_and_replaced_player_are_never_resumed() {
         let (focus, fake) = fixture(true);
-        let lease = focus.acquire(true);
+        let lease = focus.acquire(MediaMode::Pause, 0.8);
         fake.0.lock().unwrap().clear();
         focus.observe();
         fake.0.lock().unwrap().push(Snapshot {
@@ -252,7 +275,7 @@ mod tests {
     #[test]
     fn another_player_started_before_release_prevents_automatic_resume() {
         let (focus, fake) = fixture(true);
-        let lease = focus.acquire(true);
+        let lease = focus.acquire(MediaMode::Pause, 0.8);
         fake.0.lock().unwrap().push(Snapshot {
             player: "video".into(),
             track: "two".into(),
@@ -277,7 +300,7 @@ mod tests {
             state: Mutex::new(Interruption::default()),
             platform: Box::new(Unavailable),
         });
-        drop(focus.acquire(true));
+        drop(focus.acquire(MediaMode::Pause, 0.8));
         assert!(focus.state.lock().unwrap().leases.is_empty());
         focus.shutdown();
     }
@@ -312,8 +335,8 @@ mod tests {
             state: Mutex::new(Interruption::default()),
             platform: Box::new(QuietOnly(count.clone())),
         });
-        let first = focus.acquire(true);
-        let second = focus.acquire(true);
+        let first = focus.acquire(MediaMode::Pause, 0.8);
+        let second = focus.acquire(MediaMode::Pause, 0.8);
         assert_eq!(count.load(Ordering::SeqCst), 1);
         drop(first);
         assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -321,6 +344,69 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 0);
         drop(second);
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    struct DuckOnly {
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        levels: Arc<Mutex<Vec<f64>>>,
+    }
+    impl MediaPlatform for DuckOnly {
+        fn snapshots(&self) -> Result<Vec<Snapshot>, ()> {
+            panic!("ducking must never inspect playback to pause it")
+        }
+        fn set_playing(&self, _: &Snapshot, _: bool) -> bool {
+            panic!("ducking must never pause playback")
+        }
+        fn duck(&self, level: f64) -> Option<Box<dyn QuietAudio>> {
+            self.levels.lock().unwrap().push(level);
+            self.active
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(Box::new(QuietCounter(self.active.clone())))
+        }
+    }
+    #[test]
+    fn ducking_keeps_playback_running_and_restores_after_last_lease() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = Arc::new(AtomicUsize::new(0));
+        let levels = Arc::new(Mutex::new(Vec::new()));
+        let focus = Arc::new(MediaFocus {
+            state: Mutex::new(Interruption::default()),
+            platform: Box::new(DuckOnly {
+                active: active.clone(),
+                levels: levels.clone(),
+            }),
+        });
+        let first = focus.acquire(MediaMode::Duck, 0.95);
+        let second = focus.acquire(MediaMode::Duck, 0.95);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        assert_eq!(*levels.lock().unwrap(), vec![0.95]);
+        drop(first);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        drop(second);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn closing_player_releases_duck_and_next_read_can_duck_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = Arc::new(AtomicUsize::new(0));
+        let focus = Arc::new(MediaFocus {
+            state: Mutex::new(Interruption::default()),
+            platform: Box::new(DuckOnly {
+                active: active.clone(),
+                levels: Arc::new(Mutex::new(Vec::new())),
+            }),
+        });
+        let old_lease = focus.acquire(MediaMode::Duck, 0.8);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        focus.release_all();
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        let new_lease = focus.acquire(MediaMode::Duck, 0.8);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        drop(old_lease);
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        drop(new_lease);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
     }
 
     #[cfg(target_os = "macos")]
@@ -348,7 +434,7 @@ mod tests {
             before.iter().any(|s| s.playing),
             "start media before running the live test"
         );
-        let lease = focus.acquire(true);
+        let lease = focus.acquire(MediaMode::Pause, 0.8);
         assert_eq!(
             focus.state.lock().unwrap().paused.len(),
             1,

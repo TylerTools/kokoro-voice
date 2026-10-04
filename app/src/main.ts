@@ -468,7 +468,7 @@ listen<{ session: string; state: DictationState }>("dictation-state", (e) => {
 const SPEEDS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 
 async function initPrefs() {
-  const prefs = await invoke<{ voice: string; speed: number; cue_enabled?: boolean; cue_volume?: number; live_preview?: boolean; pause_other_media?: boolean }>("get_prefs");
+  const prefs = await invoke<{ voice: string; speed: number; cue_enabled?: boolean; cue_volume?: number; live_preview?: boolean; pause_other_media?: boolean; media_mode?: "off" | "pause" | "duck"; media_duck_level?: number }>("get_prefs");
 
   const cueEnabled = document.getElementById("cue-enabled") as HTMLInputElement;
   const cueVolume = document.getElementById("cue-volume") as HTMLInputElement;
@@ -493,17 +493,44 @@ async function initPrefs() {
   livePreview.onchange = () => {
     void invoke("set_prefs", { livePreview: livePreview.checked });
   };
-  const pauseOtherMedia = document.getElementById("pause-other-media") as HTMLInputElement;
-  pauseOtherMedia.checked = prefs.pause_other_media === true;
-  pauseOtherMedia.onchange = async () => {
-    pauseOtherMedia.disabled = true;
+  const mediaMode = document.getElementById("media-mode") as HTMLSelectElement;
+  const mediaDuckLevelRow = document.getElementById("media-duck-level-row") as HTMLElement;
+  const mediaDuckLevel = document.getElementById("media-duck-level") as HTMLInputElement;
+  const mediaDuckLevelLabel = document.getElementById("media-duck-level-label") as HTMLOutputElement;
+  let savedMediaMode = prefs.media_mode ?? (prefs.pause_other_media === true ? "pause" : "off");
+  mediaMode.value = savedMediaMode;
+  mediaDuckLevelRow.hidden = savedMediaMode !== "duck";
+  let savedMediaDuckLevel = Math.round((prefs.media_duck_level ?? 0.8) * 100);
+  mediaDuckLevel.value = String(savedMediaDuckLevel);
+  mediaDuckLevelLabel.value = `${savedMediaDuckLevel}%`;
+  mediaDuckLevel.oninput = () => {
+    mediaDuckLevelLabel.value = `${mediaDuckLevel.value}%`;
+  };
+  mediaDuckLevel.onchange = async () => {
+    mediaDuckLevel.disabled = true;
     try {
-      await invoke("set_prefs", { pauseOtherMedia: pauseOtherMedia.checked });
+      await invoke("set_prefs", { mediaDuckLevel: Number(mediaDuckLevel.value) / 100 });
+      savedMediaDuckLevel = Number(mediaDuckLevel.value);
     } catch {
-      pauseOtherMedia.checked = !pauseOtherMedia.checked;
+      mediaDuckLevel.value = String(savedMediaDuckLevel);
+      mediaDuckLevelLabel.value = `${savedMediaDuckLevel}%`;
+      detail.textContent = "Couldn’t save the fade level. Try again.";
+    } finally {
+      mediaDuckLevel.disabled = false;
+    }
+  };
+  mediaMode.onchange = async () => {
+    const selected = mediaMode.value;
+    mediaMode.disabled = true;
+    try {
+      await invoke("set_prefs", { mediaMode: selected });
+      savedMediaMode = selected as typeof savedMediaMode;
+      mediaDuckLevelRow.hidden = savedMediaMode !== "duck";
+    } catch {
+      mediaMode.value = savedMediaMode;
       detail.textContent = "Couldn’t save the media setting. Try again.";
     } finally {
-      pauseOtherMedia.disabled = false;
+      mediaMode.disabled = false;
     }
   };
   const launchAtLogin = document.getElementById("launch-at-login") as HTMLInputElement;

@@ -128,8 +128,12 @@ STATE_DIR = _state_dir()
 STATEFILE = os.path.join(STATE_DIR, "playback.state")
 LOCKFILE = os.path.join(STATE_DIR, "playback.lock")
 _CANCELLED = threading.Event()
+_REOPEN_OUTPUT = threading.Event()
 _OUTPUT_STREAM = None
 _OUTPUT_FORMAT = None
+_OUTPUT_ROUTE = None
+_AUDIO_UNDERFLOWS = 0
+_OUTPUT_REOPENS = 0
 
 
 class PlaybackCancelled(Exception):
@@ -191,7 +195,7 @@ def get_clipboard() -> str:
         return subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
     if IS_WIN:
         return subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+            ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"],
             capture_output=True, text=True,
         ).stdout
     return subprocess.run(["xclip", "-o", "-selection", "clipboard"],
@@ -238,7 +242,7 @@ def copy_selection() -> str:
     elif IS_WIN:
         wait_for_modifier_release()
         subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
+            ["powershell.exe", "-NoProfile", "-Command",
              "Add-Type -AssemblyName System.Windows.Forms;"
              "[System.Windows.Forms.SendKeys]::SendWait('^c')"],
             capture_output=True,
@@ -377,7 +381,7 @@ def _pid_is_our_speaker(pid: int) -> bool:
         if IS_WIN:
             command = subprocess.run(
                 [
-                    "powershell",
+                    "powershell.exe",
                     "-NoProfile",
                     "-Command",
                     f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine",
@@ -503,6 +507,7 @@ def _install_cancel_handler():
     if threading.current_thread() is not threading.main_thread():
         return None
     previous = signal.getsignal(signal.SIGTERM)
+    previous_resume = signal.getsignal(signal.SIGCONT) if not IS_WIN else None
 
     def cancel(_signum, _frame) -> None:
         _CANCELLED.set()
@@ -514,7 +519,12 @@ def _install_cancel_handler():
             pass
 
     signal.signal(signal.SIGTERM, cancel)
-    return previous
+    if not IS_WIN:
+        # SIGCONT follows accessory Play and the end of dictation. The AirPods
+        # route may have changed while this process was stopped; reopen it on
+        # the next audio block instead of writing to the stale Core Audio stream.
+        signal.signal(signal.SIGCONT, lambda _signum, _frame: _REOPEN_OUTPUT.set())
+    return previous, previous_resume
 
 
 def is_paused() -> bool:
@@ -566,9 +576,10 @@ def toggle_playback() -> str:
 
 def _close_output_stream(*, abort: bool = False) -> None:
     """Drain completed speech, but discard queued audio on cancellation."""
-    global _OUTPUT_STREAM, _OUTPUT_FORMAT
+    global _OUTPUT_STREAM, _OUTPUT_FORMAT, _OUTPUT_ROUTE
     stream, _OUTPUT_STREAM = _OUTPUT_STREAM, None
     _OUTPUT_FORMAT = None
+    _OUTPUT_ROUTE = None
     if stream is not None:
         try:
             if abort:
@@ -579,8 +590,38 @@ def _close_output_stream(*, abort: bool = False) -> None:
             stream.close()
 
 
+def _default_output_route(sd):
+    """Observe the OS default output; never select or change a device."""
+    if IS_MAC:
+        try:
+            import ctypes
+
+            class Address(ctypes.Structure):
+                _fields_ = [("selector", ctypes.c_uint32),
+                            ("scope", ctypes.c_uint32),
+                            ("element", ctypes.c_uint32)]
+
+            address = Address(int.from_bytes(b"dOut", "big"),
+                              int.from_bytes(b"glob", "big"), 0)
+            value = ctypes.c_uint32()
+            size = ctypes.c_uint32(ctypes.sizeof(value))
+            core_audio = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+            if core_audio.AudioObjectGetPropertyData(
+                1, ctypes.byref(address), 0, None,
+                ctypes.byref(size), ctypes.byref(value)
+            ) == 0:
+                return ("coreaudio", value.value)
+        except (OSError, AttributeError):
+            pass
+    try:
+        device = sd.query_devices(kind="output")
+        return (device.get("name"), device.get("hostapi"))
+    except (AttributeError, ValueError):
+        return None
+
+
 def _play_file(path: str) -> None:
-    global _OUTPUT_STREAM, _OUTPUT_FORMAT
+    global _OUTPUT_STREAM, _OUTPUT_FORMAT, _OUTPUT_ROUTE, _AUDIO_UNDERFLOWS, _OUTPUT_REOPENS
     if _CANCELLED.is_set():
         raise PlaybackCancelled
     if IS_MAC or IS_WIN:
@@ -594,6 +635,14 @@ def _play_file(path: str) -> None:
         for offset in range(0, len(samples), 2048):
             if _CANCELLED.is_set():
                 raise PlaybackCancelled
+            route = _default_output_route(sd)
+            if (_OUTPUT_STREAM is not None and route is not None and
+                    _OUTPUT_ROUTE is not None and route != _OUTPUT_ROUTE):
+                _REOPEN_OUTPUT.set()
+            if _REOPEN_OUTPUT.is_set():
+                _close_output_stream(abort=True)
+                _REOPEN_OUTPUT.clear()
+                _OUTPUT_REOPENS += 1
             if _OUTPUT_STREAM is None or _OUTPUT_FORMAT != audio_format:
                 _close_output_stream()
                 _OUTPUT_STREAM = sd.OutputStream(
@@ -602,8 +651,10 @@ def _play_file(path: str) -> None:
                 )
                 _OUTPUT_FORMAT = audio_format
                 _OUTPUT_STREAM.start()
+                _OUTPUT_ROUTE = route
             try:
-                _OUTPUT_STREAM.write(samples[offset:offset + 2048])
+                if _OUTPUT_STREAM.write(samples[offset:offset + 2048]):
+                    _AUDIO_UNDERFLOWS += 1
             except Exception:
                 if _CANCELLED.is_set():
                     raise PlaybackCancelled from None
@@ -665,6 +716,9 @@ def emit_paths(text: str, voice: str | None, speed: float) -> int:
 
 def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = False) -> int:
     """Synthesize ahead of playback so speech starts fast and never gaps."""
+    global _AUDIO_UNDERFLOWS, _OUTPUT_REOPENS
+    _AUDIO_UNDERFLOWS = 0
+    _OUTPUT_REOPENS = 0
     chunks = split_chunks(text)
     if not chunks:
         notify("Nothing to speak.")
@@ -787,11 +841,15 @@ def speak_streaming(text: str, voice: str | None, speed: float, verbose: bool = 
         producer_thread.join(timeout=0.5)
         if was_cancelled:
             retire_tts()
+        print(f"AUDIO_STATS underflows={_AUDIO_UNDERFLOWS} reopens={_OUTPUT_REOPENS}", flush=True)
         _cleanup_session_files(os.getpid())
         _clear_state_if_owned(os.getpid())
         playback_lock.release()
         if previous_handler is not None:
-            signal.signal(signal.SIGTERM, previous_handler)
+            signal.signal(signal.SIGTERM, previous_handler[0])
+            if not IS_WIN:
+                signal.signal(signal.SIGCONT, previous_handler[1])
+        _REOPEN_OUTPUT.clear()
 
 
 def main() -> int:

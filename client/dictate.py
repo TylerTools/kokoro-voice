@@ -133,7 +133,7 @@ def _url(path: str) -> str:
     return f"{host.rstrip('/')}{path}"
 
 
-def transcribe(wav_bytes: bytes, timeout: float = 120) -> dict:
+def transcribe(wav_bytes: bytes, timeout: float = 120, *, preview: bool = False) -> dict:
     req = urllib.request.Request(
         _url("/transcribe"),
         data=wav_bytes,
@@ -143,6 +143,8 @@ def transcribe(wav_bytes: bytes, timeout: float = 120) -> dict:
     tok = _token()
     if tok:
         req.add_header("Authorization", f"Bearer {tok}")
+    if preview:
+        req.add_header("X-HereWord-Preview", "1")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
 
@@ -318,7 +320,7 @@ def record_until_stopped(
                     try:
                         result = transcribe(
                             _wav_bytes(snapshot, np, sf, sample_rate,
-                                       PREVIEW_MAX_SECONDS), timeout=15
+                                       PREVIEW_MAX_SECONDS), timeout=15, preview=True
                         )
                         text = " ".join((result.get("text") or "").split())
                         clean = "".join(c if c.isprintable() else " " for c in text)
