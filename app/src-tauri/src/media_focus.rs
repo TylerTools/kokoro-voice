@@ -160,6 +160,7 @@ impl MediaFocus {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn shutdown(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.closed = true;
