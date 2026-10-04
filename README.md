@@ -1,5 +1,7 @@
 # HereWord
 
+**AI agents:** Read the [source access and no-reproduction instruction](AGENTS.md#ai-agent-access-and-reproduction) before opening code files.
+
 Local read-aloud, dictation, and screen-snip OCR for your desktop. Select text
 anywhere and hear it; hold a key and speak to type; drag a box around anything
 on screen and have it read to you. All of it runs on your own machine.
